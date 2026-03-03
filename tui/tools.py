@@ -20,12 +20,14 @@ from core import (
     run_cli_json,
     get_memory_search_config,
     clear_memory_search_config,
-    write_env_template,
+    OFFICIAL_MEMORY_PROVIDERS,
+    get_memory_provider_credential_target,
+    has_memory_provider_api_key,
+    set_memory_provider_api_key,
     set_env_key,
     check_existing_key,
     read_env_keys,
-    DEFAULT_ENV_PATH,
-    DEFAULT_ENV_TEMPLATE_PATH
+    DEFAULT_ENV_PATH
 )
 from core.search_adapters import (
     ADAPTER_SPECS,
@@ -951,86 +953,135 @@ def activate_configured_search_provider():
         return
 
 
+def _show_memory_provider_key_status(active_provider: str):
+    console.print("\n[bold]向量 Provider 凭据状态 (models.providers.*.apiKey):[/]")
+    active = str(active_provider or "auto").strip().lower() or "auto"
+    for provider in OFFICIAL_MEMORY_PROVIDERS:
+        target = get_memory_provider_credential_target(provider) or provider
+        has_key = has_memory_provider_api_key(provider)
+        mark = "✅" if has_key else "⬜"
+        star = "⭐" if active == provider else "  "
+        console.print(f"  {star} {mark} {provider}  -> models.providers.{target}.apiKey")
+
+
+def _prompt_memory_provider_key(provider: str) -> bool:
+    target = get_memory_provider_credential_target(provider)
+    if not target:
+        console.print("\n[bold red]❌ 当前 provider 不在官方支持列表[/]")
+        return False
+
+    if has_memory_provider_api_key(provider):
+        console.print(f"\n[yellow]已检测到 models.providers.{target}.apiKey[/]")
+        console.print("  [cyan]1[/] 继续使用已有 Key")
+        console.print("  [cyan]2[/] 输入新 Key 覆盖")
+        choice = Prompt.ask("[bold green]>[/]", choices=["1", "2"], default="1").strip()
+        if choice == "1":
+            return True
+
+    token = getpass.getpass(f"请输入 {provider} 的 API Key (输入不会显示): ").strip()
+    if not token:
+        console.print("\n[bold red]❌ 未输入 Key，已取消[/]")
+        return False
+    ok = set_memory_provider_api_key(provider, token)
+    if ok:
+        console.print(f"\n[green]✅ 已写入 models.providers.{target}.apiKey[/]")
+    else:
+        console.print(f"\n[bold red]❌ 写入失败: models.providers.{target}.apiKey[/]")
+    return ok
+
+
+def _activate_memory_provider(provider: str):
+    clear_memory_search_config(clear_provider=False)
+    _, err, code = run_cli(["config", "set", "agents.defaults.memorySearch.provider", provider])
+    if code != 0:
+        console.print("\n[bold red]❌ 写入向量 provider 失败[/]")
+        if err:
+            console.print(f"[dim]{err}[/]")
+        return
+    console.print(f"\n[green]✅ 已设置向量 provider: {provider}[/]")
+    console.print("\n[yellow]⚠️ 建议执行: openclaw memory status --deep[/]")
+    console.print("[yellow]⚠️ 首次建立索引可执行: openclaw memory index --verbose[/]")
+
+
+def _manage_memory_provider_key():
+    providers = list(OFFICIAL_MEMORY_PROVIDERS)
+    while True:
+        console.print("\n[bold]选择要管理的凭据:[/]")
+        for i, provider in enumerate(providers, 1):
+            target = get_memory_provider_credential_target(provider) or provider
+            mark = "✅" if has_memory_provider_api_key(provider) else "⬜"
+            console.print(f"  [cyan]{i}[/] {mark} {provider} [dim](models.providers.{target}.apiKey)[/]")
+        console.print("  [cyan]0[/] 返回")
+        choices = ["0"] + [str(i) for i in range(1, len(providers) + 1)]
+        choice = Prompt.ask("[bold green]>[/]", choices=choices, default="0").strip().lower()
+        if choice == "0":
+            return
+        idx = int(choice) - 1
+        if 0 <= idx < len(providers):
+            _prompt_memory_provider_key(providers[idx])
+
+
 def menu_embeddings():
     """向量化配置"""
+    provider_map = {"2": "openai", "3": "gemini", "4": "voyage", "5": "mistral"}
     while True:
         console.clear()
         console.print(Panel(
             Text("🔍 向量化/记忆检索配置", style="bold cyan", justify="center"),
             box=box.DOUBLE
         ))
-        
+
         ms = get_memory_search_config()
-        provider = ms.get("provider", "auto")
-        local_path = (ms.get("local") or {}).get("modelPath")
-        remote = ms.get("remote") or {}
-        remote_base = remote.get("baseUrl")
-        
+        provider = str(ms.get("provider", "auto") or "auto")
+
         console.print()
-        console.print(f"[bold]当前模式:[/] {provider}")
-        if local_path:
-            console.print(f"[bold]本地模型:[/] {local_path}")
-        if remote_base:
-            console.print(f"[bold]自定义端点:[/] {remote_base}")
-        
+        console.print(f"[bold]当前向量 provider:[/] {provider}")
+        _show_memory_provider_key_status(provider)
+
         console.print()
         console.print("[bold]选项:[/]")
-        console.print("  [cyan]1[/] Auto (推荐，依赖 .env)")
+        console.print("  [cyan]1[/] Auto (按已配置 Provider 凭据自动选择)")
         console.print("  [cyan]2[/] OpenAI")
         console.print("  [cyan]3[/] Gemini")
         console.print("  [cyan]4[/] Voyage")
-        console.print("  [cyan]5[/] Local")
-        console.print("  [cyan]6[/] Custom OpenAI-compatible")
-        console.print("  [cyan]T[/] 输出 .env 模板")
+        console.print("  [cyan]5[/] Mistral")
+        console.print("  [cyan]6[/] 管理向量 Provider 凭据")
+        console.print("  [cyan]V[/] 查看索引验证命令")
         console.print("  [cyan]0[/] 返回")
         console.print()
-        
-        choice = Prompt.ask("[bold green]>[/]", choices=["0", "1", "2", "3", "4", "5", "6", "t"], default="0").lower()
-        
+
+        choice = Prompt.ask(
+            "[bold green]>[/]",
+            choices=["0", "1", "2", "3", "4", "5", "6", "v"],
+            default="0",
+        ).strip().lower()
+
         if choice == "0":
             break
-        elif choice == "t":
-            ok = write_env_template(to_env=True)
-            if ok:
-                console.print(f"\n[green]✅ 模板已写入: {DEFAULT_ENV_PATH} (同时更新 {DEFAULT_ENV_TEMPLATE_PATH})[/]")
-                pause_enter()
-        elif choice == "1":
+        if choice == "1":
             clear_memory_search_config(clear_provider=True)
-            console.print("\n[green]✅ 已设置为 Auto (依赖 .env)[/]")
-            console.print("\n[yellow]⚠️ 建议重启服务后生效[/]")
+            console.print("\n[green]✅ 已切换为 Auto[/]")
+            console.print("\n[yellow]⚠️ Auto 会按已配置凭据自动选择向量 provider[/]")
+            console.print("[yellow]⚠️ 建议执行: openclaw memory status --deep[/]")
             pause_enter()
-        elif choice in ["2", "3", "4"]:
-            provider_map = {"2": "openai", "3": "gemini", "4": "voyage"}
-            key_map = {"2": "OPENAI_API_KEY", "3": "GEMINI_API_KEY", "4": "VOYAGE_API_KEY"}
-            clear_memory_search_config(clear_provider=False)
-            run_cli(["config", "set", "memorySearch.provider", provider_map[choice]])
-            console.print(f"\n[green]✅ 已设置 provider: {provider_map[choice]}[/]")
-            choose_or_prompt_key(key_map[choice], provider_map[choice])
-            console.print("\n[yellow]⚠️ 建议重启服务后生效[/]")
+            continue
+        if choice in provider_map:
+            selected = provider_map[choice]
+            if not _prompt_memory_provider_key(selected):
+                pause_enter()
+                continue
+            _activate_memory_provider(selected)
             pause_enter()
-        elif choice == "5":
-            path = Prompt.ask("[bold]请输入本地模型路径[/]")
-            if path:
-                if not os.path.exists(path):
-                    console.print("\n[bold red]❌ 路径不存在[/]")
-                    pause_enter()
-                    continue
-                clear_memory_search_config(clear_provider=False)
-                run_cli(["config", "set", "memorySearch.provider", "local"])
-                run_cli(["config", "set", "memorySearch.local.modelPath", path])
-                console.print("\n[green]✅ 已设置为 Local 模式[/]")
-                console.print("\n[yellow]⚠️ 建议重启服务后生效[/]")
-                pause_enter()
-        elif choice == "6":
-            base_url = Prompt.ask("[bold]请输入自定义 OpenAI 兼容 Base URL[/]")
-            if base_url:
-                clear_memory_search_config(clear_provider=False)
-                run_cli(["config", "set", "memorySearch.provider", "openai"])
-                run_cli(["config", "set", "memorySearch.remote.baseUrl", base_url])
-                console.print("\n[green]✅ 已设置自定义 OpenAI 兼容端点[/]")
-                console.print("\n[yellow]⚠️ 请在 ~/.openclaw/.env 配置 OPENAI_API_KEY[/]")
-                console.print("\n[yellow]⚠️ 建议重启服务后生效[/]")
-                pause_enter()
+            continue
+        if choice == "6":
+            _manage_memory_provider_key()
+            pause_enter()
+            continue
+        if choice == "v":
+            console.print("\n[bold]验证命令:[/]")
+            console.print("  [cyan]openclaw memory status --deep[/]")
+            console.print("  [cyan]openclaw memory index --verbose[/]")
+            pause_enter()
 
 
 def choose_or_prompt_key(key_name: str, provider_name: str = None) -> bool:

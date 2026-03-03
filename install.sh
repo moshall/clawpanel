@@ -17,6 +17,87 @@ ok() { echo -e "${GREEN}[OK]${NC} $*"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 err() { echo -e "${RED}[ERROR]${NC} $*"; }
 
+usage() {
+  cat <<'EOF'
+EasyClaw installer
+
+Usage:
+  bash install.sh [options]
+
+Options:
+  --install-dir <path>    Install EasyClaw into target directory
+  --bin-dir <path>        Install wrappers (easyclaw/easytui) into directory
+  --openclaw-home <path>  Set OpenClaw home directory
+  --target-user <name>    Install for specific user
+  --target-home <path>    Home directory for target user
+  --skip-pip              Skip pip dependency installation
+  --print-config          Print resolved install config and exit
+  -h, --help              Show this help
+EOF
+}
+
+CLI_INSTALL_DIR=""
+CLI_BIN_DIR=""
+CLI_OPENCLAW_HOME=""
+CLI_TARGET_USER=""
+CLI_TARGET_HOME=""
+CLI_SKIP_PIP="0"
+PRINT_CONFIG_ONLY="0"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --install-dir)
+      [[ $# -ge 2 ]] || { err "--install-dir requires a path"; exit 1; }
+      CLI_INSTALL_DIR="$2"
+      shift 2
+      ;;
+    --bin-dir)
+      [[ $# -ge 2 ]] || { err "--bin-dir requires a path"; exit 1; }
+      CLI_BIN_DIR="$2"
+      shift 2
+      ;;
+    --openclaw-home)
+      [[ $# -ge 2 ]] || { err "--openclaw-home requires a path"; exit 1; }
+      CLI_OPENCLAW_HOME="$2"
+      shift 2
+      ;;
+    --target-user)
+      [[ $# -ge 2 ]] || { err "--target-user requires a value"; exit 1; }
+      CLI_TARGET_USER="$2"
+      shift 2
+      ;;
+    --target-home)
+      [[ $# -ge 2 ]] || { err "--target-home requires a path"; exit 1; }
+      CLI_TARGET_HOME="$2"
+      shift 2
+      ;;
+    --skip-pip)
+      CLI_SKIP_PIP="1"
+      shift
+      ;;
+    --print-config)
+      PRINT_CONFIG_ONLY="1"
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      err "未知参数: $1"
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+[[ -n "${CLI_INSTALL_DIR}" ]] && EASYCLAW_INSTALL_DIR="${CLI_INSTALL_DIR}"
+[[ -n "${CLI_BIN_DIR}" ]] && EASYCLAW_BIN_DIR="${CLI_BIN_DIR}"
+[[ -n "${CLI_OPENCLAW_HOME}" ]] && OPENCLAW_HOME="${CLI_OPENCLAW_HOME}"
+[[ -n "${CLI_TARGET_USER}" ]] && EASYCLAW_TARGET_USER="${CLI_TARGET_USER}"
+[[ -n "${CLI_TARGET_HOME}" ]] && EASYCLAW_TARGET_HOME="${CLI_TARGET_HOME}"
+[[ "${CLI_SKIP_PIP}" == "1" ]] && EASYCLAW_SKIP_PIP="1"
+
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 is_docker="no"
 if [[ -f "/.dockerenv" ]]; then
@@ -85,6 +166,20 @@ info "环境检测: os=${os_name}, docker=${is_docker}, src=${SRC_DIR}"
 info "目标用户: ${TARGET_USER} (${TARGET_HOME})"
 info "安装目录: ${INSTALL_DIR}"
 info "命令目录: ${BIN_DIR}"
+
+if [[ "${PRINT_CONFIG_ONLY}" == "1" ]]; then
+  cat <<EOF
+SRC_DIR=${SRC_DIR}
+TARGET_USER=${TARGET_USER}
+TARGET_HOME=${TARGET_HOME}
+OPENCLAW_HOME=${OPENCLAW_HOME}
+INSTALL_DIR=${INSTALL_DIR}
+BIN_DIR=${BIN_DIR}
+RUNTIME_ENV_FILE=${RUNTIME_ENV_FILE}
+EASYCLAW_SKIP_PIP=${EASYCLAW_SKIP_PIP:-0}
+EOF
+  exit 0
+fi
 
 mkdir -p "${INSTALL_DIR}"
 mkdir -p "${OPENCLAW_HOME}"
@@ -156,6 +251,10 @@ OPENCLAW_CONFIG_DETECTED="$(detect_openclaw_config)"
 OPENCLAW_BACKUP_DIR_DETECTED="$(dirname "${OPENCLAW_CONFIG_DETECTED}")/backups"
 OPENCLAW_AUTH_PROFILES_DETECTED="$(dirname "${OPENCLAW_CONFIG_DETECTED}")/agents/main/agent/auth-profiles.json"
 OPENCLAW_HOME_DETECTED="$(dirname "${OPENCLAW_CONFIG_DETECTED}")"
+OPENCLAW_BIN_DETECTED="$(command -v openclaw 2>/dev/null || true)"
+if [[ -z "${OPENCLAW_BIN_DETECTED}" ]]; then
+  OPENCLAW_BIN_DETECTED="/usr/local/bin/openclaw"
+fi
 MAIN_AGENT_DIR_DETECTED="${OPENCLAW_HOME_DETECTED}/agents/main/agent"
 MAIN_SESSIONS_DIR_DETECTED="${OPENCLAW_HOME_DETECTED}/agents/main/sessions"
 MAIN_WORKSPACE_DETECTED="${OPENCLAW_HOME_DETECTED}/workspace"
@@ -212,6 +311,7 @@ cat > "${RUNTIME_ENV_FILE}" <<EOF
 OPENCLAW_CONFIG_PATH=${OPENCLAW_CONFIG_DETECTED}
 OPENCLAW_BACKUP_DIR=${OPENCLAW_BACKUP_DIR_DETECTED}
 OPENCLAW_AUTH_PROFILES_PATH=${OPENCLAW_AUTH_PROFILES_DETECTED}
+OPENCLAW_BIN=${OPENCLAW_BIN_DETECTED}
 EASYCLAW_SANDBOX=0
 EOF
 ok "运行时配置已写入 ${RUNTIME_ENV_FILE}"

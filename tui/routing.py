@@ -19,9 +19,11 @@ from core import (
     OPENCLAW_BIN,
     config,
     get_agent_control_plane_capabilities,
+    get_agent_permission_overrides,
     run_cli,
     run_cli_json,
     set_agent_control_plane_capabilities,
+    set_agent_permission_overrides,
 )
 from core.agent_runtime import (
     ACCESS_MODE_LABELS,
@@ -29,8 +31,15 @@ from core.agent_runtime import (
     CAPABILITY_PRESET_LABELS,
     CAPABILITY_PRESET_HELP,
     apply_agent_access_profile,
+    build_agent_access_profile,
     extract_agent_access_profile,
+    normalize_permission_overrides,
     resolve_agent_runtime_paths,
+)
+from core.runtime_env import (
+    is_docker_environment,
+    normalize_capability_preset_for_runtime,
+    recommended_capability_preset_for_runtime,
 )
 
 console = Console()
@@ -190,6 +199,7 @@ def _pick_access_mode(default_mode: str = "rw") -> str:
 
 
 def _pick_capability_preset(default_preset: str = "workspace-collab") -> str:
+    in_docker = is_docker_environment()
     options = [
         ("1", "full-access"),
         ("2", "readonly-analysis"),
@@ -197,14 +207,131 @@ def _pick_capability_preset(default_preset: str = "workspace-collab") -> str:
         ("4", "workspace-collab"),
         ("5", "messaging"),
     ]
+    if in_docker:
+        options = [("1", "full-access"), ("2", "messaging")]
     reverse = {value: key for key, value in options}
+    fallback_default = recommended_capability_preset_for_runtime(is_docker=in_docker)
+    resolved_default = normalize_capability_preset_for_runtime(default_preset, is_docker=in_docker)
+    if resolved_default not in CAPABILITY_PRESET_LABELS:
+        resolved_default = fallback_default
     console.print("\n[bold]工具能力:[/]")
     console.print("[dim]说明：完全开放 = 宿主机直连；其余档位默认走 sandbox。[/]")
+    if in_docker:
+        console.print("[yellow]⚠️ 检测到 Docker 环境：已强制关闭 sandbox，仅允许非 sandbox 档位。[/]")
     for key, value in options:
         console.print(f"  [cyan]{key}[/] {CAPABILITY_PRESET_LABELS[value]}")
         console.print(f"      [dim]{CAPABILITY_PRESET_HELP[value]}[/]")
-    pick = Prompt.ask("[bold green]>[/]", choices=[x[0] for x in options], default=reverse.get(default_preset, "4"))
-    return dict(options).get(pick, "workspace-collab")
+    pick = Prompt.ask("[bold green]>[/]", choices=[x[0] for x in options], default=reverse.get(resolved_default, options[0][0]))
+    selected = dict(options).get(pick, fallback_default)
+    return normalize_capability_preset_for_runtime(selected, is_docker=in_docker)
+
+
+def _permission_summary(overrides: Optional[dict]) -> str:
+    normalized = normalize_permission_overrides(overrides)
+    if not normalized:
+        return "未配置"
+    parts: List[str] = []
+    binds = normalized.get("directory_binds")
+    if isinstance(binds, list) and binds:
+        parts.append(f"目录白名单:{len(binds)}")
+    if "fs_workspace_only" in normalized:
+        parts.append(f"fs.workspaceOnly={'true' if normalized['fs_workspace_only'] else 'false'}")
+    if normalized.get("exec_security"):
+        parts.append(f"exec.security={normalized['exec_security']}")
+    deny = normalized.get("deny_tools")
+    if isinstance(deny, list) and deny:
+        parts.append(f"deny={','.join(deny)}")
+    if "elevated_enabled" in normalized:
+        parts.append(f"elevated.enabled={'true' if normalized['elevated_enabled'] else 'false'}")
+    return " | ".join(parts) if parts else "未配置"
+
+
+def _permission_overrides_from_agent_entry(agent_entry: Optional[dict]) -> dict:
+    if not isinstance(agent_entry, dict):
+        return {}
+    tools = agent_entry.get("tools") if isinstance(agent_entry.get("tools"), dict) else {}
+    sandbox = agent_entry.get("sandbox") if isinstance(agent_entry.get("sandbox"), dict) else {}
+    docker = sandbox.get("docker") if isinstance(sandbox.get("docker"), dict) else {}
+    fs_cfg = tools.get("fs") if isinstance(tools.get("fs"), dict) else {}
+    exec_cfg = tools.get("exec") if isinstance(tools.get("exec"), dict) else {}
+    elevated_cfg = tools.get("elevated") if isinstance(tools.get("elevated"), dict) else {}
+    access = extract_agent_access_profile(agent_entry)
+    baseline = build_agent_access_profile(access.get("access_mode", "rw"), access.get("capability_preset", "workspace-collab"))
+    baseline_tools = baseline.get("tools") if isinstance(baseline.get("tools"), dict) else {}
+    baseline_deny = [str(x).strip() for x in (baseline_tools.get("deny", []) if isinstance(baseline_tools.get("deny"), list) else []) if str(x).strip()]
+    current_deny = [str(x).strip() for x in (tools.get("deny", []) if isinstance(tools.get("deny"), list) else []) if str(x).strip()]
+
+    payload = {
+        "directory_binds": docker.get("binds", []),
+        "fs_workspace_only": fs_cfg.get("workspaceOnly"),
+        "exec_security": exec_cfg.get("security", ""),
+        "deny_tools": current_deny if current_deny != baseline_deny else [],
+        "elevated_enabled": elevated_cfg.get("enabled"),
+    }
+    return normalize_permission_overrides(payload)
+
+
+def _prompt_permission_overrides(existing: Optional[dict]) -> dict:
+    normalized = normalize_permission_overrides(existing)
+    default_binds = ",".join(normalized.get("directory_binds", []))
+    raw_binds = Prompt.ask(
+        "[bold]目录白名单绑定（逗号分隔 host:container:mode，留空=不配置）[/]",
+        default=default_binds,
+    ).strip()
+    directory_binds = [x.strip() for x in raw_binds.split(",") if x.strip()]
+
+    fs_default = "0"
+    if "fs_workspace_only" in normalized:
+        fs_default = "1" if normalized.get("fs_workspace_only") else "2"
+    console.print("[bold]tools.fs.workspaceOnly[/]")
+    console.print("  [cyan]0[/] 不配置")
+    console.print("  [cyan]1[/] true")
+    console.print("  [cyan]2[/] false")
+    fs_pick = Prompt.ask("[bold green]>[/]", choices=["0", "1", "2"], default=fs_default)
+    fs_workspace_only = True if fs_pick == "1" else (False if fs_pick == "2" else None)
+
+    exec_default = "0"
+    exec_security_existing = str(normalized.get("exec_security", "") or "")
+    if exec_security_existing == "deny":
+        exec_default = "1"
+    elif exec_security_existing == "allowlist":
+        exec_default = "2"
+    elif exec_security_existing == "full":
+        exec_default = "3"
+    console.print("[bold]tools.exec.security[/]")
+    console.print("  [cyan]0[/] 不配置")
+    console.print("  [cyan]1[/] deny")
+    console.print("  [cyan]2[/] allowlist")
+    console.print("  [cyan]3[/] full")
+    exec_pick = Prompt.ask("[bold green]>[/]", choices=["0", "1", "2", "3"], default=exec_default)
+    exec_security = {"0": "", "1": "deny", "2": "allowlist", "3": "full"}.get(exec_pick, "")
+
+    default_deny = ",".join(normalized.get("deny_tools", []))
+    raw_deny = Prompt.ask("[bold]tools.deny（逗号分隔，留空=不配置）[/]", default=default_deny).strip()
+    deny_tools = [x.strip() for x in raw_deny.split(",") if x.strip()]
+
+    elevated_default = "0"
+    if "elevated_enabled" in normalized:
+        elevated_default = "1" if normalized.get("elevated_enabled") else "2"
+    console.print("[bold]tools.elevated.enabled[/]")
+    console.print("  [cyan]0[/] 不配置")
+    console.print("  [cyan]1[/] true")
+    console.print("  [cyan]2[/] false")
+    elevated_pick = Prompt.ask("[bold green]>[/]", choices=["0", "1", "2"], default=elevated_default)
+    elevated_enabled = True if elevated_pick == "1" else (False if elevated_pick == "2" else None)
+
+    out: dict = {}
+    if directory_binds:
+        out["directory_binds"] = directory_binds
+    if fs_workspace_only is not None:
+        out["fs_workspace_only"] = fs_workspace_only
+    if exec_security:
+        out["exec_security"] = exec_security
+    if deny_tools:
+        out["deny_tools"] = deny_tools
+    if elevated_enabled is not None:
+        out["elevated_enabled"] = elevated_enabled
+    return out
 
 
 def _workspace_root_base() -> str:
@@ -341,6 +468,7 @@ def upsert_main_agent_config(
     access_mode: str = "rw",
     capability_preset: str = "workspace-collab",
     control_plane_capabilities: Optional[List[str]] = None,
+    permission_overrides: Optional[dict] = None,
     require_existing: bool = False,
 ) -> bool:
     if not agent_id:
@@ -363,7 +491,21 @@ def upsert_main_agent_config(
     if sub_cfg:
         agent_entry["subagents"] = sub_cfg
 
-    apply_agent_access_profile(agent_entry, access_mode, capability_preset)
+    resolved_capability = normalize_capability_preset_for_runtime(capability_preset)
+    existing_entry = _agent_by_id(agent_id)
+    if permission_overrides is None:
+        effective_permission_overrides = get_agent_permission_overrides(agent_id)
+        if not effective_permission_overrides:
+            effective_permission_overrides = _permission_overrides_from_agent_entry(existing_entry)
+    else:
+        effective_permission_overrides = normalize_permission_overrides(permission_overrides)
+
+    apply_agent_access_profile(
+        agent_entry,
+        access_mode,
+        resolved_capability,
+        permission_overrides=effective_permission_overrides,
+    )
 
     agents_root = config.data.setdefault("agents", {})
     agents_list = agents_root.get("list")
@@ -408,6 +550,8 @@ def upsert_main_agent_config(
     _ensure_agent_runtime_dirs(agent_id)
     if not config.save():
         return False
+    if permission_overrides is not None:
+        set_agent_permission_overrides(agent_id, effective_permission_overrides)
     return set_agent_control_plane_capabilities(agent_id, control_plane_capabilities or [])
 
 
@@ -435,6 +579,9 @@ def _extract_agent_settings(target: dict) -> dict:
         sub_model_fallbacks = ",".join(existing_sub_model.get("fallbacks", []) or [])
 
     access = extract_agent_access_profile(target)
+    permission_overrides = get_agent_permission_overrides(str(target.get("id", "") or ""))
+    if not permission_overrides:
+        permission_overrides = _permission_overrides_from_agent_entry(target)
     control_caps = get_agent_control_plane_capabilities(str(target.get("id", "") or ""))
     workspace_path = str(
         target.get("workspace", "") or resolve_agent_runtime_paths(str(target.get("id", "") or "main"), config.path)["workspace"]
@@ -451,6 +598,7 @@ def _extract_agent_settings(target: dict) -> dict:
         "capability_preset": access["capability_preset"],
         "access_label": access["access_label"],
         "capability_label": access["capability_label"],
+        "permission_overrides": permission_overrides,
         "control_caps": control_caps,
     }
 
@@ -480,12 +628,36 @@ def set_agent_control_plane_whitelist(agent_id: str, enabled: bool, capabilities
     )
 
 
+def set_agent_permission_policy(agent_id: str, permission_overrides: Optional[dict]) -> bool:
+    target = _agent_by_id(agent_id)
+    if not target:
+        return False
+    settings = _extract_agent_settings(target)
+    if not settings["workspace_path"]:
+        return False
+
+    return upsert_main_agent_config(
+        agent_id=agent_id,
+        workspace_path=settings["workspace_path"],
+        model_primary=settings["model_primary"],
+        model_fallbacks_csv=settings["model_fallbacks"],
+        allow_agents=settings["allow_agents"],
+        sub_model_primary=settings["sub_model_primary"],
+        sub_model_fallbacks_csv=settings["sub_model_fallbacks"],
+        access_mode=settings["access_mode"],
+        capability_preset=settings["capability_preset"],
+        control_plane_capabilities=settings["control_caps"],
+        permission_overrides=permission_overrides,
+    )
+
+
 def create_agent_with_official_cli(
     agent_id: str,
     workspace_path: str,
     access_mode: str,
     capability_preset: str,
     control_plane_capabilities: Optional[List[str]] = None,
+    permission_overrides: Optional[dict] = None,
 ) -> tuple[bool, str]:
     stdout, stderr, code = run_cli(["agents", "add", agent_id, "--workspace", workspace_path])
     if code != 0:
@@ -504,6 +676,7 @@ def create_agent_with_official_cli(
         access_mode=access_mode,
         capability_preset=capability_preset,
         control_plane_capabilities=control_plane_capabilities or [],
+        permission_overrides=permission_overrides,
         require_existing=True,
     )
     if not ok:
@@ -810,6 +983,7 @@ def main_agent_settings_menu():
             table.add_column("工作区", style="bold")
             table.add_column("工作区访问", style="yellow")
             table.add_column("工具能力", style="yellow")
+            table.add_column("细粒度权限", style="yellow")
             table.add_column("模型策略", style="magenta")
             table.add_column("派发", style="green")
             table.add_column("健康", style="white")
@@ -835,6 +1009,7 @@ def main_agent_settings_menu():
                     _short_workspace(str(a.get("workspace", "(未绑定)"))),
                     settings["access_label"],
                     settings["capability_label"],
+                    _permission_summary(settings["permission_overrides"]),
                     "独立模型" if model_overridden else "跟随全局",
                     dispatch,
                     health,
@@ -888,17 +1063,21 @@ def main_agent_settings_menu():
 
             current_caps = settings["control_caps"]
             current_str = ", ".join(current_caps) if current_caps else "(关闭)"
+            current_permission_summary = _permission_summary(settings.get("permission_overrides"))
             console.print(f"\n[dim]当前工作区访问: {settings['access_label']}[/]")
             console.print(f"[dim]当前工具能力: {settings['capability_label']}[/]")
             console.print(f"[dim]当前快捷命令放行: {current_str}[/]")
+            console.print(f"[dim]当前细粒度权限: {current_permission_summary}[/]")
             console.print("[dim]提示：只有在启用 sandbox 时，工作区访问才代表硬隔离。[/]")
             console.print("[bold]操作:[/]")
             console.print("  [cyan]1[/] 更新工作区访问与工具能力")
             console.print("  [cyan]2[/] 开启推荐快捷命令放行")
             console.print("  [cyan]3[/] 关闭快捷命令放行")
             console.print("  [cyan]4[/] 自定义快捷命令放行")
+            console.print("  [cyan]5[/] 配置细粒度目录/功能权限")
+            console.print("  [cyan]6[/] 清空细粒度目录/功能权限")
             console.print("  [cyan]0[/] 返回")
-            op = Prompt.ask("[bold green]>[/]", choices=["0", "1", "2", "3", "4"], default="0")
+            op = Prompt.ask("[bold green]>[/]", choices=["0", "1", "2", "3", "4", "5", "6"], default="0")
             if op == "0":
                 continue
             if op == "1":
@@ -915,6 +1094,7 @@ def main_agent_settings_menu():
                     access_mode=access_mode,
                     capability_preset=capability_preset,
                     control_plane_capabilities=current_caps,
+                    permission_overrides=settings.get("permission_overrides"),
                 )
                 if ok:
                     console.print("\n[green]✅ 已更新访问权限[/]")
@@ -932,10 +1112,28 @@ def main_agent_settings_menu():
                 )
             elif op == "3":
                 ok = set_agent_control_plane_whitelist(agent_id=agent_id, enabled=False, capabilities=[])
-            else:
+            elif op == "4":
                 raw = Prompt.ask("[bold]请输入能力列表（逗号分隔）[/]", default="").strip()
                 caps = [x.strip() for x in raw.split(",") if x.strip()]
                 ok = set_agent_control_plane_whitelist(agent_id=agent_id, enabled=bool(caps), capabilities=caps)
+            elif op == "5":
+                new_overrides = _prompt_permission_overrides(settings.get("permission_overrides"))
+                ok = set_agent_permission_policy(agent_id, new_overrides)
+                if ok:
+                    console.print("\n[green]✅ 已更新细粒度权限[/]")
+                    console.print(f"  [dim]{_permission_summary(new_overrides)}[/]")
+                else:
+                    console.print("\n[bold red]❌ 设置失败[/]")
+                pause_enter()
+                continue
+            else:  # op == "6"
+                ok = set_agent_permission_policy(agent_id, {})
+                if ok:
+                    console.print("\n[green]✅ 已清空细粒度权限（恢复未配置）[/]")
+                else:
+                    console.print("\n[bold red]❌ 清空失败[/]")
+                pause_enter()
+                continue
 
             if ok:
                 console.print("\n[green]✅ 已更新快捷命令放行[/]")
@@ -961,19 +1159,24 @@ def main_agent_settings_menu():
             continue
 
         existing = {}
-        existing_settings = _extract_agent_settings(existing) if existing else {
-            "workspace_path": "",
-            "access_mode": "rw",
-            "capability_preset": "workspace-collab",
-            "access_label": ACCESS_MODE_LABELS["rw"],
-            "capability_label": CAPABILITY_PRESET_LABELS["workspace-collab"],
-            "control_caps": [],
-            "model_primary": "",
-            "model_fallbacks": "",
-            "allow_agents": [],
-            "sub_model_primary": "",
-            "sub_model_fallbacks": "",
-        }
+        if existing:
+            existing_settings = _extract_agent_settings(existing)
+        else:
+            default_capability = recommended_capability_preset_for_runtime()
+            existing_settings = {
+                "workspace_path": "",
+                "access_mode": "rw",
+                "capability_preset": default_capability,
+                "access_label": ACCESS_MODE_LABELS["rw"],
+                "capability_label": CAPABILITY_PRESET_LABELS[default_capability],
+                "permission_overrides": {},
+                "control_caps": [],
+                "model_primary": "",
+                "model_fallbacks": "",
+                "allow_agents": [],
+                "sub_model_primary": "",
+                "sub_model_fallbacks": "",
+            }
 
         default_ws = existing_settings["workspace_path"] or _next_workspace_path(_get_agents_list())
         workspace_path = Prompt.ask("[bold]请输入 workspace 绝对路径[/]", default=default_ws).strip()
@@ -992,6 +1195,7 @@ def main_agent_settings_menu():
             access_mode=access_mode,
             capability_preset=capability_preset,
             control_plane_capabilities=control_caps,
+            permission_overrides={},
         )
         if ok:
             config.reload()

@@ -22,6 +22,7 @@ from core import (
     config,
     get_models_providers,
     get_agent_control_plane_capabilities,
+    get_agent_permission_overrides,
     run_cli,
     run_cli_json,
     set_agent_control_plane_capabilities,
@@ -30,8 +31,9 @@ from core import (
 from core.agent_runtime import (
     ACCESS_MODE_LABELS,
     CAPABILITY_PRESET_LABELS,
-    apply_agent_access_profile,
+    build_agent_access_profile,
     extract_agent_access_profile,
+    normalize_permission_overrides,
     resolve_agent_runtime_paths,
 )
 from core.datasource import get_custom_models
@@ -43,6 +45,12 @@ from core.search_adapters import (
     set_fallback_sources,
     set_primary_source,
     update_provider as update_search_adapter_provider,
+)
+from core.runtime_env import (
+    capability_requires_sandbox,
+    is_docker_environment,
+    normalize_capability_preset_for_runtime,
+    recommended_capability_preset_for_runtime,
 )
 from core.sandbox import is_sandbox_enabled
 from core.write_engine import activate_model, deactivate_model, upsert_provider_api_key
@@ -111,6 +119,13 @@ def _invalidate_cache():
 
 def _normalize_provider(provider: str) -> str:
     return str(provider or "").strip().strip("'\"").strip().lower()
+
+
+def _resolve_capability_preset(preset: str) -> str:
+    raw = str(preset or "").strip().lower()
+    if not raw:
+        raw = recommended_capability_preset_for_runtime()
+    return normalize_capability_preset_for_runtime(raw)
 
 
 def _list_config_backups(limit: int = 20) -> List[Dict[str, Any]]:
@@ -267,14 +282,69 @@ def _agent_by_id(agent_id: str) -> Dict[str, Any]:
     return {}
 
 
+def _permission_overrides_from_agent(agent: Dict[str, Any]) -> Dict[str, Any]:
+    tools = agent.get("tools") if isinstance(agent.get("tools"), dict) else {}
+    sandbox = agent.get("sandbox") if isinstance(agent.get("sandbox"), dict) else {}
+    docker = sandbox.get("docker") if isinstance(sandbox.get("docker"), dict) else {}
+    fs_cfg = tools.get("fs") if isinstance(tools.get("fs"), dict) else {}
+    exec_cfg = tools.get("exec") if isinstance(tools.get("exec"), dict) else {}
+    elevated_cfg = tools.get("elevated") if isinstance(tools.get("elevated"), dict) else {}
+    access = extract_agent_access_profile(agent)
+    baseline = build_agent_access_profile(access.get("access_mode", "rw"), access.get("capability_preset", "workspace-collab"))
+    baseline_tools = baseline.get("tools") if isinstance(baseline.get("tools"), dict) else {}
+    baseline_deny = [
+        str(x).strip()
+        for x in (baseline_tools.get("deny", []) if isinstance(baseline_tools.get("deny"), list) else [])
+        if str(x).strip()
+    ]
+    current_deny = [
+        str(x).strip()
+        for x in (tools.get("deny", []) if isinstance(tools.get("deny"), list) else [])
+        if str(x).strip()
+    ]
+    return normalize_permission_overrides(
+        {
+            "directory_binds": docker.get("binds", []),
+            "fs_workspace_only": fs_cfg.get("workspaceOnly"),
+            "exec_security": exec_cfg.get("security", ""),
+            "deny_tools": current_deny if current_deny != baseline_deny else [],
+            "elevated_enabled": elevated_cfg.get("enabled"),
+        }
+    )
+
+
+def _permission_overrides_to_api(overrides: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    normalized = normalize_permission_overrides(overrides)
+    if not normalized:
+        return {}
+    out: Dict[str, Any] = {}
+    binds = normalized.get("directory_binds")
+    if isinstance(binds, list) and binds:
+        out["directoryBinds"] = binds
+    if "fs_workspace_only" in normalized:
+        out["fsWorkspaceOnly"] = bool(normalized["fs_workspace_only"])
+    if normalized.get("exec_security"):
+        out["execSecurity"] = str(normalized["exec_security"])
+    deny_tools = normalized.get("deny_tools")
+    if isinstance(deny_tools, list) and deny_tools:
+        out["denyTools"] = deny_tools
+    if "elevated_enabled" in normalized:
+        out["elevatedEnabled"] = bool(normalized["elevated_enabled"])
+    return out
+
+
 def _agent_access(agent: Dict[str, Any]) -> Dict[str, Any]:
     access = extract_agent_access_profile(agent)
+    permission_overrides = get_agent_permission_overrides(str(agent.get("id", "") or ""))
+    if not permission_overrides:
+        permission_overrides = _permission_overrides_from_agent(agent)
     return {
         "accessMode": access["access_mode"],
         "accessLabel": access["access_label"],
         "capabilityPreset": access["capability_preset"],
         "capabilityLabel": access["capability_label"],
         "controlPlaneCapabilities": get_agent_control_plane_capabilities(str(agent.get("id", "") or "")),
+        "permissionPolicy": _permission_overrides_to_api(permission_overrides),
     }
 
 
@@ -357,6 +427,36 @@ def _set_agent_access_policy(agent_id: str, access_mode: str, capability_preset:
         access_mode=access_mode,
         capability_preset=capability_preset,
         control_plane_capabilities=access["controlPlaneCapabilities"],
+        permission_overrides=access.get("permissionPolicy"),
+    )
+
+
+def _set_agent_permission_policy(agent_id: str, permission_overrides: Optional[Dict[str, Any]]) -> bool:
+    target = _agent_by_id(agent_id)
+    if not target:
+        return False
+    workspace = str(target.get("workspace", "") or resolve_agent_runtime_paths(agent_id, config.path)["workspace"]).strip()
+    if not workspace:
+        return False
+
+    model_primary, model_fallbacks = _extract_model_cfg(target.get("model"))
+    sub = target.get("subagents") if isinstance(target.get("subagents"), dict) else {}
+    allow_agents = sub.get("allowAgents") if isinstance(sub.get("allowAgents"), list) else []
+    sub_model_primary, sub_model_fallbacks = _extract_model_cfg(sub.get("model"))
+    access = _agent_access(target)
+
+    return upsert_main_agent_config(
+        agent_id=agent_id,
+        workspace_path=workspace,
+        model_primary=model_primary,
+        model_fallbacks_csv=",".join(model_fallbacks),
+        allow_agents=allow_agents,
+        sub_model_primary=sub_model_primary,
+        sub_model_fallbacks_csv=",".join(sub_model_fallbacks),
+        access_mode=access["accessMode"],
+        capability_preset=access["capabilityPreset"],
+        control_plane_capabilities=access["controlPlaneCapabilities"],
+        permission_overrides=permission_overrides or {},
     )
 
 
@@ -572,6 +672,11 @@ def _delete_provider_noninteractive(provider: str) -> Dict[str, Any]:
 
 def _state_payload(force: bool = False, include_usage: bool = False) -> Dict[str, Any]:
     config.reload()
+    runtime_is_docker = bool(is_docker_environment())
+    runtime_default_capability = recommended_capability_preset_for_runtime(is_docker=runtime_is_docker)
+    sandbox_capability_presets = [
+        preset for preset in CAPABILITY_PRESET_LABELS.keys() if capability_requires_sandbox(preset)
+    ]
 
     usage = _load_usage(force=force) if include_usage else (_CACHE.get("usage", {}).get("value") or {"code": 0, "raw": "", "error": ""})
 
@@ -598,7 +703,10 @@ def _state_payload(force: bool = False, include_usage: bool = False) -> Dict[str
     return {
         "runtime": {
             "sandboxEnabled": bool(is_sandbox_enabled()),
+            "isDocker": runtime_is_docker,
             "configPath": DEFAULT_CONFIG_PATH,
+            "recommendedCapabilityPreset": runtime_default_capability,
+            "sandboxCapabilityPresets": sandbox_capability_presets,
             "webTokenHint": f"{WEB_TOKEN[:4]}******" if WEB_TOKEN else "(empty)",
         },
         "globalModel": {
@@ -660,7 +768,7 @@ class CreateAgentIn(BaseModel):
     agentId: str
     workspace: str
     accessMode: str = "rw"
-    capabilityPreset: str = "workspace-collab"
+    capabilityPreset: str = ""
 
 
 class BindWorkspaceIn(BaseModel):
@@ -671,7 +779,17 @@ class BindWorkspaceIn(BaseModel):
 class AgentSecurityIn(BaseModel):
     agentId: str
     accessMode: str = "rw"
-    capabilityPreset: str = "workspace-collab"
+    capabilityPreset: str = ""
+
+
+class AgentPermissionPolicyIn(BaseModel):
+    agentId: str
+    directoryBinds: List[str] = Field(default_factory=list)
+    fsWorkspaceOnly: Optional[bool] = None
+    execSecurity: str = ""
+    denyTools: List[str] = Field(default_factory=list)
+    elevatedEnabled: Optional[bool] = None
+    clearAll: bool = False
 
 
 class ControlWhitelistIn(BaseModel):
@@ -854,11 +972,12 @@ async def get_models_catalog_api():
 
 @app.post("/api/agents", dependencies=[Depends(verify_token)])
 async def create_agent_api(body: CreateAgentIn):
+    capability_preset = _resolve_capability_preset(body.capabilityPreset)
     ok, detail = create_agent_with_official_cli(
         agent_id=body.agentId,
         workspace_path=body.workspace,
         access_mode=body.accessMode,
-        capability_preset=body.capabilityPreset,
+        capability_preset=capability_preset,
         control_plane_capabilities=[],
     )
     if not ok:
@@ -899,9 +1018,31 @@ async def bind_workspace_api(body: BindWorkspaceIn):
 
 @app.post("/api/agents/security", dependencies=[Depends(verify_token)])
 async def set_agent_security_api(body: AgentSecurityIn):
-    ok = _set_agent_access_policy(body.agentId, body.accessMode, body.capabilityPreset)
+    capability_preset = _resolve_capability_preset(body.capabilityPreset)
+    ok = _set_agent_access_policy(body.agentId, body.accessMode, capability_preset)
     if not ok:
         raise HTTPException(status_code=400, detail="更新访问限制失败")
+    _invalidate_cache()
+    return {"ok": True, "state": _state_payload(force=True)}
+
+
+@app.post("/api/agents/permissions", dependencies=[Depends(verify_token)])
+async def set_agent_permission_policy_api(body: AgentPermissionPolicyIn):
+    if body.clearAll:
+        overrides: Dict[str, Any] = {}
+    else:
+        overrides = normalize_permission_overrides(
+            {
+                "directory_binds": body.directoryBinds,
+                "fs_workspace_only": body.fsWorkspaceOnly,
+                "exec_security": body.execSecurity,
+                "deny_tools": body.denyTools,
+                "elevated_enabled": body.elevatedEnabled,
+            }
+        )
+    ok = _set_agent_permission_policy(body.agentId, overrides)
+    if not ok:
+        raise HTTPException(status_code=400, detail="更新细粒度权限失败")
     _invalidate_cache()
     return {"ok": True, "state": _state_payload(force=True)}
 

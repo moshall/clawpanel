@@ -3,6 +3,7 @@ Core 模块 - OpenClaw 配置和 API 封装
 """
 import json
 import os
+import shutil
 import subprocess
 from copy import deepcopy
 from datetime import datetime
@@ -19,8 +20,18 @@ DEFAULT_AUTH_PROFILES_PATH = os.environ.get(
 DEFAULT_ENV_PATH = os.environ.get("OPENCLAW_ENV_PATH", "/root/.openclaw/.env")
 DEFAULT_ENV_TEMPLATE_PATH = os.environ.get("OPENCLAW_ENV_TEMPLATE_PATH", "/root/.openclaw/workspace/templates/openclaw.env.example")
 
-# CLI 路径
-OPENCLAW_BIN = os.environ.get("OPENCLAW_BIN", "/usr/local/bin/openclaw")
+def resolve_openclaw_bin() -> str:
+    env_path = str(os.environ.get("OPENCLAW_BIN", "") or "").strip()
+    if env_path:
+        return env_path
+    discovered = shutil.which("openclaw")
+    if discovered:
+        return discovered
+    return "/usr/local/bin/openclaw"
+
+
+# CLI 路径（兼容旧调用方）
+OPENCLAW_BIN = resolve_openclaw_bin()
 
 # 无效 token 值的黑名单
 INVALID_TOKEN_PATTERNS = [
@@ -49,6 +60,55 @@ def _normalize_control_plane_record(value: Any) -> Optional[Dict[str, Any]]:
             if token and token not in caps:
                 caps.append(token)
     return {"controlPlaneCapabilities": caps}
+
+
+def _normalize_permission_override_record(value: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(value, dict):
+        return None
+
+    out: Dict[str, Any] = {}
+
+    raw_binds = value.get("directoryBinds")
+    if raw_binds is None:
+        raw_binds = value.get("directory_binds")
+    if isinstance(raw_binds, list):
+        binds: List[str] = []
+        for item in raw_binds:
+            token = str(item or "").strip()
+            if token and token not in binds:
+                binds.append(token)
+        if binds:
+            out["directoryBinds"] = binds
+
+    fs_workspace_only = value.get("fsWorkspaceOnly")
+    if fs_workspace_only is None:
+        fs_workspace_only = value.get("fs_workspace_only")
+    if isinstance(fs_workspace_only, bool):
+        out["fsWorkspaceOnly"] = fs_workspace_only
+
+    exec_security = str(value.get("execSecurity", value.get("exec_security", "")) or "").strip().lower()
+    if exec_security in {"deny", "allowlist", "full"}:
+        out["execSecurity"] = exec_security
+
+    raw_deny = value.get("denyTools")
+    if raw_deny is None:
+        raw_deny = value.get("deny_tools")
+    if isinstance(raw_deny, list):
+        deny_tools: List[str] = []
+        for item in raw_deny:
+            token = str(item or "").strip()
+            if token and token not in deny_tools:
+                deny_tools.append(token)
+        if deny_tools:
+            out["denyTools"] = deny_tools
+
+    elevated_enabled = value.get("elevatedEnabled")
+    if elevated_enabled is None:
+        elevated_enabled = value.get("elevated_enabled")
+    if isinstance(elevated_enabled, bool):
+        out["elevatedEnabled"] = elevated_enabled
+
+    return out if out else None
 
 
 def _load_agent_meta_store() -> Dict[str, Any]:
@@ -129,6 +189,17 @@ def get_agent_control_plane_capabilities(agent_id: str) -> List[str]:
     return normalized["controlPlaneCapabilities"]
 
 
+def get_agent_permission_overrides(agent_id: str) -> Dict[str, Any]:
+    aid = str(agent_id or "").strip()
+    if not aid:
+        return {}
+    store = _load_agent_meta_store()
+    agents_store = store.get("agents", {}) if isinstance(store.get("agents", {}), dict) else {}
+    record = agents_store.get(aid, {}) if isinstance(agents_store.get(aid, {}), dict) else {}
+    normalized = _normalize_permission_override_record(record.get("permissionOverrides"))
+    return normalized or {}
+
+
 def set_agent_control_plane_capabilities(agent_id: str, capabilities: Optional[List[str]] = None) -> bool:
     aid = str(agent_id or "").strip()
     if not aid:
@@ -153,6 +224,33 @@ def set_agent_control_plane_capabilities(agent_id: str, capabilities: Optional[L
             agents_store[aid].pop("controlPlaneCapabilities", None)
             if not agents_store[aid]:
                 agents_store.pop(aid, None)
+    store["agents"] = agents_store
+    return _save_agent_meta_store(store)
+
+
+def set_agent_permission_overrides(agent_id: str, overrides: Optional[Dict[str, Any]] = None) -> bool:
+    aid = str(agent_id or "").strip()
+    if not aid:
+        return False
+
+    normalized = _normalize_permission_override_record(overrides or {})
+    store = _load_agent_meta_store()
+    agents_store = store.get("agents", {})
+    if not isinstance(agents_store, dict):
+        agents_store = {}
+    record = agents_store.get(aid, {})
+    if not isinstance(record, dict):
+        record = {}
+
+    if normalized:
+        record["permissionOverrides"] = normalized
+        agents_store[aid] = record
+    else:
+        if aid in agents_store:
+            agents_store[aid].pop("permissionOverrides", None)
+            if not agents_store[aid]:
+                agents_store.pop(aid, None)
+
     store["agents"] = agents_store
     return _save_agent_meta_store(store)
 
@@ -463,7 +561,7 @@ def run_cli(args: list, capture: bool = True) -> tuple:
     Returns:
         (stdout, stderr, returncode)
     """
-    cmd = [OPENCLAW_BIN] + args
+    cmd = [resolve_openclaw_bin()] + args
     
     try:
         _repair_openclaw_config_if_needed()
@@ -661,24 +759,76 @@ def set_models_providers(providers_dict: Dict) -> bool:
     return retcode == 0
 
 
+OFFICIAL_MEMORY_PROVIDERS = ["openai", "gemini", "voyage", "mistral"]
+MEMORY_PROVIDER_CREDENTIAL_MAP = {
+    "openai": "openai",
+    "gemini": "google",
+    "voyage": "voyage",
+    "mistral": "mistral",
+}
+
+
+def get_memory_provider_credential_target(provider: str) -> Optional[str]:
+    key = str(provider or "").strip().lower()
+    return MEMORY_PROVIDER_CREDENTIAL_MAP.get(key)
+
+
+def has_memory_provider_api_key(provider: str) -> bool:
+    target = get_memory_provider_credential_target(provider)
+    if not target:
+        return False
+    providers = get_models_providers() or {}
+    row = providers.get(target, {}) if isinstance(providers, dict) else {}
+    if not isinstance(row, dict):
+        return False
+    api_key = str(row.get("apiKey", "") or "").strip()
+    return bool(api_key)
+
+
+def set_memory_provider_api_key(provider: str, api_key: str) -> bool:
+    target = get_memory_provider_credential_target(provider)
+    token = str(api_key or "").strip()
+    if not target or not token:
+        return False
+
+    providers = get_models_providers() or {}
+    if not isinstance(providers, dict):
+        providers = {}
+    current = providers.get(target, {})
+    if not isinstance(current, dict):
+        current = {}
+    current["apiKey"] = token
+    providers[target] = current
+    return set_models_providers(providers)
+
+
 def get_memory_search_config() -> Dict:
     """获取 memorySearch 配置"""
     config.reload()
-    return config.data.get("memorySearch", {}) or {}
+    agents = config.data.get("agents", {}) if isinstance(config.data, dict) else {}
+    defaults = agents.get("defaults", {}) if isinstance(agents, dict) else {}
+    scoped = defaults.get("memorySearch", {}) if isinstance(defaults, dict) else {}
+    if isinstance(scoped, dict) and scoped:
+        return scoped
+    legacy = config.data.get("memorySearch", {}) if isinstance(config.data, dict) else {}
+    return legacy if isinstance(legacy, dict) else {}
 
 
 def clear_memory_search_config(clear_provider: bool = False):
     """清除 memorySearch 配置"""
     if clear_provider:
+        run_cli(["config", "unset", "agents.defaults.memorySearch.provider"])
         run_cli(["config", "unset", "memorySearch.provider"])
+    run_cli(["config", "unset", "agents.defaults.memorySearch.local"])
     run_cli(["config", "unset", "memorySearch.local"])
+    run_cli(["config", "unset", "agents.defaults.memorySearch.remote"])
     run_cli(["config", "unset", "memorySearch.remote"])
 
 
 def write_env_template(to_env: bool = True) -> bool:
     """写入 .env 模板"""
     template = """# OpenClaw Embeddings API Keys
-# 选择一项或多项（按你配置的 provider 使用）
+# 若你仍使用环境变量方式，可按需配置下列官方 provider
 
 # OpenAI embeddings
 OPENAI_API_KEY=sk-...
@@ -689,8 +839,8 @@ GEMINI_API_KEY=...
 # Voyage embeddings
 VOYAGE_API_KEY=...
 
-# 可选：自定义 OpenAI 兼容端点（仅当 memorySearch.remote.baseUrl 配置时）
-# OPENAI_API_KEY=sk-...
+# Mistral embeddings
+MISTRAL_API_KEY=...
 """
 
     # 确保模板目录存在

@@ -228,7 +228,7 @@
           <div class="table-wrap">
             <table>
               <thead>
-                <tr><th>Agent</th><th>工作区</th><th>工作区访问</th><th>模型策略</th></tr>
+                <tr><th>Agent</th><th>工作区</th><th>工作区访问</th><th>细粒度权限</th><th>模型策略</th></tr>
               </thead>
               <tbody id="agentRows"></tbody>
             </table>
@@ -257,6 +257,18 @@
           <p class="hint" id="agentCapabilityHint"></p>
           <p class="hint">说明：只有启用 sandbox 时，工作区访问才是硬隔离。完全开放通常表示宿主机直连。</p>
           <button class="btn subtle" id="setWorkspaceOnlyBtn">保存运行环境与权限</button>
+          <hr />
+          <h4>细粒度目录/功能权限（默认不配置）</h4>
+          <div class="row"><label>目录白名单绑定（逗号分隔）</label><input id="agentDirectoryBinds" type="text" placeholder="/root/.openclaw/skills:/skills:ro,/root/.openclaw/software:/software:ro" /></div>
+          <div class="row"><label>tools.fs.workspaceOnly</label><select id="agentFsWorkspaceOnly"><option value="">不配置</option><option value="true">true</option><option value="false">false</option></select></div>
+          <div class="row"><label>tools.exec.security</label><select id="agentExecSecurity"><option value="">不配置</option><option value="deny">deny</option><option value="allowlist">allowlist</option><option value="full">full</option></select></div>
+          <div class="row"><label>tools.deny（逗号分隔）</label><input id="agentDenyTools" type="text" placeholder="process,exec" /></div>
+          <div class="row"><label>tools.elevated.enabled</label><select id="agentElevatedEnabled"><option value="">不配置</option><option value="true">true</option><option value="false">false</option></select></div>
+          <p class="hint" id="agentPermissionHint">未配置</p>
+          <div class="actions">
+            <button class="btn subtle" id="savePermissionPolicyBtn">保存细粒度权限</button>
+            <button class="btn danger" id="clearPermissionPolicyBtn">清空细粒度权限</button>
+          </div>
           <div class="row"><label>控制层命令白名单（逗号分隔）</label><input id="controlCapsInput" type="text" placeholder="model.switch,status.read,skill.read" /></div>
           <div class="actions">
             <button class="btn subtle" id="setWhitelistBtn">保存白名单</button>

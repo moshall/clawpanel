@@ -30,7 +30,29 @@ EasyClaw 是 OpenClaw 的管理工具，提供：
 
 ## 2. Quickstart
 
-### macOS 一键安装
+安装前建议先确认：
+- Python 3.10+（Linux 建议额外安装 `python3-venv`）
+- OpenClaw CLI（`openclaw` 命令可执行）
+
+### 在线一键安装（推荐）
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/moshall/easyclaw/main/install-online.sh | bash
+```
+
+自定义安装目录（便于脚本化调用）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/moshall/easyclaw/main/install-online.sh | bash -s -- --install-dir /opt/easyclaw
+```
+
+也可同时指定命令目录：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/moshall/easyclaw/main/install-online.sh | bash -s -- --install-dir /opt/easyclaw --bin-dir /opt/easyclaw/bin
+```
+
+### 本地源码安装（macOS / Linux）
 
 ```bash
 cd /path/to/easyclaw
@@ -40,17 +62,19 @@ bash install.sh
 默认安装到：
 - `~/.openclaw/easyclaw`
 
-### Linux 一键安装
-
-```bash
-cd /path/to/easyclaw
-bash install.sh
-```
+说明：
+- 安装脚本会自动探测 `openclaw` 可执行路径（如 `/usr/bin/openclaw` 或 `/usr/local/bin/openclaw`）并写入运行环境。
 
 如需安装到系统命令目录：
 
 ```bash
 sudo bash install.sh
+```
+
+CLI 方式自定义目录（适合其他工具调用）：
+
+```bash
+bash install.sh --install-dir /opt/easyclaw --bin-dir /opt/easyclaw/bin
 ```
 
 ### Docker 一键安装
@@ -67,6 +91,10 @@ docker exec -it easyclaw-web bash -lc 'cd /easyclaw && bash install.sh'
 docker exec -it easyclaw-web bash -lc 'easyclaw tui'
 docker exec -it easyclaw-web bash -lc 'easyclaw web --port 4231'
 ```
+
+Docker 权限建议：
+- EasyClaw 在 Docker 环境会默认禁用 sandbox（避免容器内套 Docker 的常见权限报错）。
+- 若你需要 sandbox 隔离，建议改为宿主机安装 OpenClaw；或自行准备 DooD/DinD 后再手动调整 OpenClaw 原生配置。
 
 ## 3. 运行执行方式
 
@@ -123,6 +151,13 @@ EasyClaw 把 OpenClaw 官方的 `sandbox + tools` 映射成更直观的 2 层：
 注意：
 - 只有在启用 sandbox 时，“工作区访问”才代表硬隔离
 - 若 sandbox 关闭，workspace 更接近默认工作目录，不等于真正文件隔离
+- 新增“细粒度目录/功能权限”支持（默认不配置，可单独保存/清空）：
+  - 目录白名单绑定（`sandbox.docker.binds`）
+  - `tools.fs.workspaceOnly`
+  - `tools.exec.security`
+  - `tools.deny`
+  - `tools.elevated.enabled`
+- 细粒度权限元数据保存到 `~/.openclaw/easyclaw/agent_meta.json`（不会污染 OpenClaw 官方 schema）
 
 ## 4. 常见问题
 

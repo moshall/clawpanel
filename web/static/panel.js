@@ -21,6 +21,31 @@
     { value: "messaging", label: "通讯协调", hint: "偏消息协调与任务分发，不提供完整编码能力。适合调度、中控、路由类 Agent。" },
   ];
 
+  function runtimeIsDocker() {
+    return Boolean(state.data && state.data.runtime && state.data.runtime.isDocker);
+  }
+
+  function capabilityOptionsForRuntime() {
+    if (!runtimeIsDocker()) {
+      return CAPABILITY_OPTIONS.slice();
+    }
+    return CAPABILITY_OPTIONS.filter((opt) => !capabilityRequiresSandbox(opt.value));
+  }
+
+  function sandboxCapabilityPresetSet() {
+    const presets = (((state.data || {}).runtime || {}).sandboxCapabilityPresets || []);
+    return new Set((presets || []).map((x) => String(x || "").trim()).filter(Boolean));
+  }
+
+  function capabilityRequiresSandbox(capabilityPreset) {
+    const key = String(capabilityPreset || "").trim();
+    return sandboxCapabilityPresetSet().has(key);
+  }
+
+  function dockerSandboxGuidanceText() {
+    return "Docker 环境已默认禁用 sandbox，仅提供非 sandbox 能力档位。";
+  }
+
   function parseTokenFromUrl() {
     const params = new URLSearchParams(window.location.search);
     return (params.get("token") || "").trim();
@@ -75,6 +100,49 @@
       .filter(Boolean);
   }
 
+  function parseOptionalBoolean(value) {
+    if (value === "true") return true;
+    if (value === "false") return false;
+    return null;
+  }
+
+  function setOptionalBooleanSelect(selectId, value) {
+    if (value === true) {
+      $(selectId).value = "true";
+      return;
+    }
+    if (value === false) {
+      $(selectId).value = "false";
+      return;
+    }
+    $(selectId).value = "";
+  }
+
+  function normalizePermissionPolicy(policy) {
+    const src = policy || {};
+    const out = {};
+    const binds = Array.isArray(src.directoryBinds) ? src.directoryBinds.map((x) => String(x || "").trim()).filter(Boolean) : [];
+    if (binds.length) out.directoryBinds = binds;
+    if (typeof src.fsWorkspaceOnly === "boolean") out.fsWorkspaceOnly = src.fsWorkspaceOnly;
+    const execSecurity = String(src.execSecurity || "").trim().toLowerCase();
+    if (execSecurity) out.execSecurity = execSecurity;
+    const denyTools = Array.isArray(src.denyTools) ? src.denyTools.map((x) => String(x || "").trim()).filter(Boolean) : [];
+    if (denyTools.length) out.denyTools = denyTools;
+    if (typeof src.elevatedEnabled === "boolean") out.elevatedEnabled = src.elevatedEnabled;
+    return out;
+  }
+
+  function permissionPolicySummary(policy) {
+    const normalized = normalizePermissionPolicy(policy);
+    const chunks = [];
+    if (normalized.directoryBinds && normalized.directoryBinds.length) chunks.push(`目录白名单:${normalized.directoryBinds.length}`);
+    if (Object.prototype.hasOwnProperty.call(normalized, "fsWorkspaceOnly")) chunks.push(`fs.workspaceOnly=${normalized.fsWorkspaceOnly ? "true" : "false"}`);
+    if (normalized.execSecurity) chunks.push(`exec.security=${normalized.execSecurity}`);
+    if (normalized.denyTools && normalized.denyTools.length) chunks.push(`deny=${normalized.denyTools.join(",")}`);
+    if (Object.prototype.hasOwnProperty.call(normalized, "elevatedEnabled")) chunks.push(`elevated.enabled=${normalized.elevatedEnabled ? "true" : "false"}`);
+    return chunks.length ? chunks.join(" | ") : "未配置";
+  }
+
   function selectedMultiValues(selectId) {
     return Array.from($(selectId).selectedOptions || []).map((o) => o.value).filter(Boolean);
   }
@@ -106,9 +174,19 @@
 
   function updateAgentAccessHints() {
     $("newAgentAccessHint").textContent = optionHint(ACCESS_OPTIONS, $("newAgentAccessMode").value);
-    $("newAgentCapabilityHint").textContent = optionHint(CAPABILITY_OPTIONS, $("newAgentCapabilityPreset").value);
+    const newCapability = $("newAgentCapabilityPreset").value;
+    const opsCapability = $("agentCapabilityPreset").value;
+    let newCapabilityHint = optionHint(CAPABILITY_OPTIONS, newCapability);
+    let opsCapabilityHint = optionHint(CAPABILITY_OPTIONS, opsCapability);
+    if (runtimeIsDocker() && capabilityRequiresSandbox(newCapability)) {
+      newCapabilityHint = `${newCapabilityHint} ${dockerSandboxGuidanceText()}`.trim();
+    }
+    if (runtimeIsDocker() && capabilityRequiresSandbox(opsCapability)) {
+      opsCapabilityHint = `${opsCapabilityHint} ${dockerSandboxGuidanceText()}`.trim();
+    }
+    $("newAgentCapabilityHint").textContent = newCapabilityHint;
     $("agentAccessHint").textContent = optionHint(ACCESS_OPTIONS, $("agentAccessMode").value);
-    $("agentCapabilityHint").textContent = optionHint(CAPABILITY_OPTIONS, $("agentCapabilityPreset").value);
+    $("agentCapabilityHint").textContent = opsCapabilityHint;
   }
 
   function formatBytes(bytes) {
@@ -303,7 +381,9 @@
   function renderHealth() {
     const runtime = state.data.runtime || {};
     $("runtimeConfigPath").textContent = runtime.configPath || "-";
-    $("runtimeSandbox").textContent = runtime.sandboxEnabled ? "⚠️ 已开启（读 sandbox）" : "✅ 关闭（读真实配置）";
+    const envText = runtime.isDocker ? "Docker" : "宿主机";
+    const sandboxText = runtime.sandboxEnabled ? "⚠️ 已开启（读 sandbox）" : "✅ 关闭（读真实配置）";
+    $("runtimeSandbox").textContent = `${sandboxText} | 环境: ${envText}`;
     $("runtimeTokenHint").textContent = runtime.webTokenHint || "-";
 
     $("dashPrimary").textContent = state.data.globalModel.primary || "(未设置)";
@@ -372,20 +452,24 @@
     const rows = state.data.agents || [];
     if (!rows.length) {
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td colspan="4" class="muted">暂无 Agent（可在下方新增）</td>`;
+      tr.innerHTML = `<td colspan="5" class="muted">暂无 Agent（可在下方新增）</td>`;
       agentBody.appendChild(tr);
       return;
     }
     rows.forEach((agent) => {
       const tr = document.createElement("tr");
       const modelPolicy = agent.model.overridden ? "独立模型" : "跟随全局";
-      tr.innerHTML = `<td>${agent.id}</td><td>${agent.workspace || "(未绑定)"}</td><td>${agent.access.accessLabel}</td><td>${modelPolicy}</td>`;
+      const permissionSummary = permissionPolicySummary((agent.access || {}).permissionPolicy || {});
+      tr.innerHTML = `<td>${agent.id}</td><td>${agent.workspace || "(未绑定)"}</td><td>${agent.access.accessLabel}</td><td>${permissionSummary}</td><td>${modelPolicy}</td>`;
       agentBody.appendChild(tr);
     });
   }
 
   function renderAgentSelectors() {
     const agentOpts = (state.data.agents || []).map((a) => ({ value: a.id, label: a.id }));
+    const runtime = (state.data || {}).runtime || {};
+    const defaultCapability = runtime.recommendedCapabilityPreset || "workspace-collab";
+    const runtimeCapabilityOptions = capabilityOptionsForRuntime();
     if (!agentOpts.length) {
       agentOpts.push({ value: "", label: "(暂无 Agent)" });
     }
@@ -393,10 +477,35 @@
     fillSelect($("agentOpsId"), agentOpts);
     fillSelect($("dispatchAgentId"), agentOpts);
     fillSelect($("newAgentAccessMode"), ACCESS_OPTIONS);
-    fillSelect($("newAgentCapabilityPreset"), CAPABILITY_OPTIONS);
+    fillSelect($("newAgentCapabilityPreset"), runtimeCapabilityOptions);
     fillSelect($("agentAccessMode"), ACCESS_OPTIONS);
-    fillSelect($("agentCapabilityPreset"), CAPABILITY_OPTIONS);
+    fillSelect($("agentCapabilityPreset"), runtimeCapabilityOptions);
+    const fallbackCapability = (runtimeCapabilityOptions[0] || {}).value || "full-access";
+    $("newAgentCapabilityPreset").value = runtimeCapabilityOptions.some((x) => x.value === defaultCapability)
+      ? defaultCapability
+      : fallbackCapability;
+    $("agentCapabilityPreset").value = $("newAgentCapabilityPreset").value;
     updateAgentAccessHints();
+  }
+
+  function applyPermissionPolicyToForm(policy) {
+    const normalized = normalizePermissionPolicy(policy || {});
+    $("agentDirectoryBinds").value = (normalized.directoryBinds || []).join(",");
+    setOptionalBooleanSelect("agentFsWorkspaceOnly", normalized.fsWorkspaceOnly);
+    $("agentExecSecurity").value = normalized.execSecurity || "";
+    $("agentDenyTools").value = (normalized.denyTools || []).join(",");
+    setOptionalBooleanSelect("agentElevatedEnabled", normalized.elevatedEnabled);
+    $("agentPermissionHint").textContent = permissionPolicySummary(normalized);
+  }
+
+  function collectPermissionPolicyFromForm() {
+    return normalizePermissionPolicy({
+      directoryBinds: parseCsv($("agentDirectoryBinds").value),
+      fsWorkspaceOnly: parseOptionalBoolean($("agentFsWorkspaceOnly").value),
+      execSecurity: $("agentExecSecurity").value,
+      denyTools: parseCsv($("agentDenyTools").value),
+      elevatedEnabled: parseOptionalBoolean($("agentElevatedEnabled").value),
+    });
   }
 
   function syncAgentDrivenForms() {
@@ -408,16 +517,23 @@
 
     const aidOps = $("agentOpsId").value;
     const agentOps = (state.data.agents || []).find((x) => x.id === aidOps);
+    const runtime = (state.data || {}).runtime || {};
+    const capabilityOptions = capabilityOptionsForRuntime();
+    const defaultCapability = runtime.recommendedCapabilityPreset || "workspace-collab";
+    const fallbackCapability = (capabilityOptions[0] || {}).value || "full-access";
     if (agentOps) {
       $("bindWorkspaceInput").value = agentOps.workspace || "";
       $("agentAccessMode").value = agentOps.access.accessMode || "rw";
-      $("agentCapabilityPreset").value = agentOps.access.capabilityPreset || "workspace-collab";
+      const capability = agentOps.access.capabilityPreset || defaultCapability;
+      $("agentCapabilityPreset").value = capabilityOptions.some((x) => x.value === capability) ? capability : fallbackCapability;
       $("controlCapsInput").value = (agentOps.access.controlPlaneCapabilities || []).join(",");
+      applyPermissionPolicyToForm((agentOps.access || {}).permissionPolicy || {});
     } else {
       $("bindWorkspaceInput").value = "";
       $("agentAccessMode").value = "rw";
-      $("agentCapabilityPreset").value = "workspace-collab";
+      $("agentCapabilityPreset").value = capabilityOptions.some((x) => x.value === defaultCapability) ? defaultCapability : fallbackCapability;
       $("controlCapsInput").value = "";
+      applyPermissionPolicyToForm({});
     }
     updateAgentAccessHints();
 
@@ -915,13 +1031,14 @@
   }
 
   async function createAgent() {
+    const capabilityPreset = $("newAgentCapabilityPreset").value;
     await api("/api/agents", {
       method: "POST",
       body: JSON.stringify({
         agentId: $("newAgentId").value.trim(),
         workspace: $("newAgentWorkspace").value.trim(),
         accessMode: $("newAgentAccessMode").value,
-        capabilityPreset: $("newAgentCapabilityPreset").value,
+        capabilityPreset,
       }),
     });
     await refreshState();
@@ -941,16 +1058,39 @@
   }
 
   async function setWorkspaceOnly() {
+    const capabilityPreset = $("agentCapabilityPreset").value;
     await api("/api/agents/security", {
       method: "POST",
       body: JSON.stringify({
         agentId: $("agentOpsId").value,
         accessMode: $("agentAccessMode").value,
-        capabilityPreset: $("agentCapabilityPreset").value,
+        capabilityPreset,
       }),
     });
     await refreshState();
     showNotice("已更新访问权限");
+  }
+
+  async function savePermissionPolicy(clearAll = false) {
+    const payload = clearAll ? {} : collectPermissionPolicyFromForm();
+    await api("/api/agents/permissions", {
+      method: "POST",
+      body: JSON.stringify({
+        agentId: $("agentOpsId").value,
+        directoryBinds: payload.directoryBinds || [],
+        fsWorkspaceOnly: Object.prototype.hasOwnProperty.call(payload, "fsWorkspaceOnly")
+          ? payload.fsWorkspaceOnly
+          : null,
+        execSecurity: payload.execSecurity || "",
+        denyTools: payload.denyTools || [],
+        elevatedEnabled: Object.prototype.hasOwnProperty.call(payload, "elevatedEnabled")
+          ? payload.elevatedEnabled
+          : null,
+        clearAll,
+      }),
+    });
+    await refreshState();
+    showNotice(clearAll ? "已清空细粒度权限" : "已保存细粒度权限");
   }
 
   async function saveWhitelist(enabled) {
@@ -1142,6 +1282,8 @@
     $("createAgentBtn").addEventListener("click", () => runAction(createAgent));
     $("bindWorkspaceBtn").addEventListener("click", () => runAction(bindWorkspace));
     $("setWorkspaceOnlyBtn").addEventListener("click", () => runAction(setWorkspaceOnly));
+    $("savePermissionPolicyBtn").addEventListener("click", () => runAction(() => savePermissionPolicy(false)));
+    $("clearPermissionPolicyBtn").addEventListener("click", () => runAction(() => savePermissionPolicy(true)));
     $("setWhitelistBtn").addEventListener("click", () => runAction(() => saveWhitelist(true)));
     $("clearWhitelistBtn").addEventListener("click", () => runAction(() => saveWhitelist(false)));
 
@@ -1168,6 +1310,21 @@
     $("newAgentCapabilityPreset").addEventListener("change", updateAgentAccessHints);
     $("agentAccessMode").addEventListener("change", updateAgentAccessHints);
     $("agentCapabilityPreset").addEventListener("change", updateAgentAccessHints);
+    $("agentDirectoryBinds").addEventListener("input", () => {
+      $("agentPermissionHint").textContent = permissionPolicySummary(collectPermissionPolicyFromForm());
+    });
+    $("agentFsWorkspaceOnly").addEventListener("change", () => {
+      $("agentPermissionHint").textContent = permissionPolicySummary(collectPermissionPolicyFromForm());
+    });
+    $("agentExecSecurity").addEventListener("change", () => {
+      $("agentPermissionHint").textContent = permissionPolicySummary(collectPermissionPolicyFromForm());
+    });
+    $("agentDenyTools").addEventListener("input", () => {
+      $("agentPermissionHint").textContent = permissionPolicySummary(collectPermissionPolicyFromForm());
+    });
+    $("agentElevatedEnabled").addEventListener("change", () => {
+      $("agentPermissionHint").textContent = permissionPolicySummary(collectPermissionPolicyFromForm());
+    });
     $("adapterProvider").addEventListener("change", syncAdapterFields);
     $("officialAuthOption").addEventListener("change", syncOfficialAuthMode);
 

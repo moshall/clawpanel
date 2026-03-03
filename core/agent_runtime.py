@@ -66,6 +66,8 @@ TOOLS_PROFILE_TO_PRESET = {
     "messaging": "messaging",
 }
 
+EXEC_SECURITY_VALUES = {"deny", "allowlist", "full"}
+
 
 def openclaw_root_from_config(config_path: Optional[str]) -> str:
     path = str(config_path or "").strip()
@@ -112,17 +114,114 @@ def build_agent_access_profile(
     return base
 
 
+def normalize_permission_overrides(overrides: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not isinstance(overrides, dict):
+        return {}
+
+    out: Dict[str, Any] = {}
+
+    raw_binds = overrides.get("directory_binds")
+    if raw_binds is None:
+        raw_binds = overrides.get("directoryBinds")
+    if isinstance(raw_binds, list):
+        binds = _dedupe_tokens(raw_binds)
+        if binds:
+            out["directory_binds"] = binds
+
+    fs_workspace_only = overrides.get("fs_workspace_only")
+    if fs_workspace_only is None:
+        fs_workspace_only = overrides.get("fsWorkspaceOnly")
+    if isinstance(fs_workspace_only, bool):
+        out["fs_workspace_only"] = fs_workspace_only
+
+    exec_security = str(overrides.get("exec_security", overrides.get("execSecurity", "")) or "").strip().lower()
+    if exec_security in EXEC_SECURITY_VALUES:
+        out["exec_security"] = exec_security
+
+    raw_deny = overrides.get("deny_tools")
+    if raw_deny is None:
+        raw_deny = overrides.get("denyTools")
+    if isinstance(raw_deny, list):
+        deny_tools = _dedupe_tokens(raw_deny)
+        if deny_tools:
+            out["deny_tools"] = deny_tools
+
+    elevated_enabled = overrides.get("elevated_enabled")
+    if elevated_enabled is None:
+        elevated_enabled = overrides.get("elevatedEnabled")
+    if isinstance(elevated_enabled, bool):
+        out["elevated_enabled"] = elevated_enabled
+
+    return out
+
+
+def apply_permission_overrides(
+    agent_entry: Dict[str, Any],
+    overrides: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    normalized = normalize_permission_overrides(overrides)
+    if not normalized:
+        return agent_entry
+
+    sandbox = agent_entry.get("sandbox")
+    if not isinstance(sandbox, dict):
+        sandbox = {}
+        agent_entry["sandbox"] = sandbox
+    tools = agent_entry.get("tools")
+    if not isinstance(tools, dict):
+        tools = {}
+        agent_entry["tools"] = tools
+
+    binds = normalized.get("directory_binds")
+    if isinstance(binds, list) and binds:
+        docker = sandbox.get("docker")
+        if not isinstance(docker, dict):
+            docker = {}
+            sandbox["docker"] = docker
+        docker["binds"] = binds
+
+    if "fs_workspace_only" in normalized:
+        fs_cfg = tools.get("fs")
+        if not isinstance(fs_cfg, dict):
+            fs_cfg = {}
+            tools["fs"] = fs_cfg
+        fs_cfg["workspaceOnly"] = bool(normalized["fs_workspace_only"])
+
+    exec_security = normalized.get("exec_security")
+    if isinstance(exec_security, str) and exec_security in EXEC_SECURITY_VALUES:
+        exec_cfg = tools.get("exec")
+        if not isinstance(exec_cfg, dict):
+            exec_cfg = {}
+            tools["exec"] = exec_cfg
+        exec_cfg["security"] = exec_security
+
+    deny_tools = normalized.get("deny_tools")
+    if isinstance(deny_tools, list) and deny_tools:
+        tools["deny"] = deny_tools
+
+    if "elevated_enabled" in normalized:
+        elevated_cfg = tools.get("elevated")
+        if not isinstance(elevated_cfg, dict):
+            elevated_cfg = {}
+            tools["elevated"] = elevated_cfg
+        elevated_cfg["enabled"] = bool(normalized["elevated_enabled"])
+
+    return agent_entry
+
+
 def apply_agent_access_profile(
     agent_entry: Dict[str, Any],
     access_mode: str,
     capability_preset: str,
     custom_allow: Optional[List[str]] = None,
     custom_deny: Optional[List[str]] = None,
+    permission_overrides: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     profile = build_agent_access_profile(access_mode, capability_preset, custom_allow, custom_deny)
     agent_entry.pop("security", None)
     agent_entry["sandbox"] = profile["sandbox"]
     agent_entry["tools"] = profile["tools"]
+    apply_permission_overrides(agent_entry, permission_overrides)
     return agent_entry
 
 
