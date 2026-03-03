@@ -27,6 +27,15 @@ EasyClaw 是 OpenClaw 的管理工具，提供：
 
 ## 2. Quickstart
 
+### 升级前重要声明
+
+- OpenClaw 官方更新频率较高，升级前建议先与 AI 或维护者核对本次版本是否涉及：
+  - 安全策略变更（如 sandbox、权限模型、执行策略）
+  - 文件/目录权限边界调整（如 workspace 挂载、读写范围）
+  - 配置文件结构与字段迁移（如 `openclaw.json` schema 变化）
+  - 社区已知回归问题或兼容性 Bug
+- 完成上述核对后再执行升级，可显著降低生产环境风险。
+
 安装前建议先确认：
 - Python 3.10+（Linux 建议额外安装 `python3-venv`）
 - OpenClaw CLI（`openclaw` 命令可执行）
