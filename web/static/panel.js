@@ -121,6 +121,8 @@
   function normalizePermissionPolicy(policy) {
     const src = policy || {};
     const out = {};
+    const toolsProfile = String(src.toolsProfile || "").trim().toLowerCase();
+    if (["full", "coding", "messaging", "minimal"].includes(toolsProfile)) out.toolsProfile = toolsProfile;
     const binds = Array.isArray(src.directoryBinds) ? src.directoryBinds.map((x) => String(x || "").trim()).filter(Boolean) : [];
     if (binds.length) out.directoryBinds = binds;
     if (typeof src.fsWorkspaceOnly === "boolean") out.fsWorkspaceOnly = src.fsWorkspaceOnly;
@@ -135,6 +137,7 @@
   function permissionPolicySummary(policy) {
     const normalized = normalizePermissionPolicy(policy);
     const chunks = [];
+    if (normalized.toolsProfile) chunks.push(`profile=${normalized.toolsProfile}`);
     if (normalized.directoryBinds && normalized.directoryBinds.length) chunks.push(`目录白名单:${normalized.directoryBinds.length}`);
     if (Object.prototype.hasOwnProperty.call(normalized, "fsWorkspaceOnly")) chunks.push(`fs.workspaceOnly=${normalized.fsWorkspaceOnly ? "true" : "false"}`);
     if (normalized.execSecurity) chunks.push(`exec.security=${normalized.execSecurity}`);
@@ -490,6 +493,7 @@
 
   function applyPermissionPolicyToForm(policy) {
     const normalized = normalizePermissionPolicy(policy || {});
+    $("agentToolsProfile").value = normalized.toolsProfile || "";
     $("agentDirectoryBinds").value = (normalized.directoryBinds || []).join(",");
     setOptionalBooleanSelect("agentFsWorkspaceOnly", normalized.fsWorkspaceOnly);
     $("agentExecSecurity").value = normalized.execSecurity || "";
@@ -500,6 +504,7 @@
 
   function collectPermissionPolicyFromForm() {
     return normalizePermissionPolicy({
+      toolsProfile: $("agentToolsProfile").value,
       directoryBinds: parseCsv($("agentDirectoryBinds").value),
       fsWorkspaceOnly: parseOptionalBoolean($("agentFsWorkspaceOnly").value),
       execSecurity: $("agentExecSecurity").value,
@@ -1077,6 +1082,7 @@
       method: "POST",
       body: JSON.stringify({
         agentId: $("agentOpsId").value,
+        toolsProfile: payload.toolsProfile || "",
         directoryBinds: payload.directoryBinds || [],
         fsWorkspaceOnly: Object.prototype.hasOwnProperty.call(payload, "fsWorkspaceOnly")
           ? payload.fsWorkspaceOnly

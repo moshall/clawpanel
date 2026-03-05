@@ -219,6 +219,7 @@ EasyClaw 把 OpenClaw 官方的 `sandbox + tools` 映射成更直观的 2 层：
 - 只有在启用 sandbox 时，“工作区访问”才代表硬隔离
 - 若 sandbox 关闭，workspace 更接近默认工作目录，不等于真正文件隔离
 - 新增“细粒度目录/功能权限”支持（默认不配置，可单独保存/清空）：
+  - `tools.profile`（`full` / `coding` / `messaging` / `minimal`，用于新版 OpenClaw 通用手动适配）
   - 目录白名单绑定（`sandbox.docker.binds`）
   - `tools.fs.workspaceOnly`
   - `tools.exec.security`

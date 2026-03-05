@@ -231,6 +231,8 @@ def _permission_summary(overrides: Optional[dict]) -> str:
     if not normalized:
         return "未配置"
     parts: List[str] = []
+    if normalized.get("tools_profile"):
+        parts.append(f"profile={normalized['tools_profile']}")
     binds = normalized.get("directory_binds")
     if isinstance(binds, list) and binds:
         parts.append(f"目录白名单:{len(binds)}")
@@ -258,10 +260,13 @@ def _permission_overrides_from_agent_entry(agent_entry: Optional[dict]) -> dict:
     access = extract_agent_access_profile(agent_entry)
     baseline = build_agent_access_profile(access.get("access_mode", "rw"), access.get("capability_preset", "workspace-collab"))
     baseline_tools = baseline.get("tools") if isinstance(baseline.get("tools"), dict) else {}
+    baseline_profile = str(baseline_tools.get("profile", "") or "").strip().lower()
+    current_profile = str(tools.get("profile", "") or "").strip().lower()
     baseline_deny = [str(x).strip() for x in (baseline_tools.get("deny", []) if isinstance(baseline_tools.get("deny"), list) else []) if str(x).strip()]
     current_deny = [str(x).strip() for x in (tools.get("deny", []) if isinstance(tools.get("deny"), list) else []) if str(x).strip()]
 
     payload = {
+        "tools_profile": current_profile if current_profile and current_profile != baseline_profile else "",
         "directory_binds": docker.get("binds", []),
         "fs_workspace_only": fs_cfg.get("workspaceOnly"),
         "exec_security": exec_cfg.get("security", ""),
@@ -273,6 +278,25 @@ def _permission_overrides_from_agent_entry(agent_entry: Optional[dict]) -> dict:
 
 def _prompt_permission_overrides(existing: Optional[dict]) -> dict:
     normalized = normalize_permission_overrides(existing)
+    profile_default = "0"
+    profile_existing = str(normalized.get("tools_profile", "") or "")
+    if profile_existing == "full":
+        profile_default = "1"
+    elif profile_existing == "coding":
+        profile_default = "2"
+    elif profile_existing == "messaging":
+        profile_default = "3"
+    elif profile_existing == "minimal":
+        profile_default = "4"
+    console.print("[bold]tools.profile[/]")
+    console.print("  [cyan]0[/] 不配置")
+    console.print("  [cyan]1[/] full（最大权限）")
+    console.print("  [cyan]2[/] coding（开发常用）")
+    console.print("  [cyan]3[/] messaging（消息协作）")
+    console.print("  [cyan]4[/] minimal（最小权限）")
+    profile_pick = Prompt.ask("[bold green]>[/]", choices=["0", "1", "2", "3", "4"], default=profile_default)
+    tools_profile = {"0": "", "1": "full", "2": "coding", "3": "messaging", "4": "minimal"}.get(profile_pick, "")
+
     default_binds = ",".join(normalized.get("directory_binds", []))
     raw_binds = Prompt.ask(
         "[bold]目录白名单绑定（逗号分隔 host:container:mode，留空=不配置）[/]",
@@ -321,6 +345,8 @@ def _prompt_permission_overrides(existing: Optional[dict]) -> dict:
     elevated_enabled = True if elevated_pick == "1" else (False if elevated_pick == "2" else None)
 
     out: dict = {}
+    if tools_profile:
+        out["tools_profile"] = tools_profile
     if directory_binds:
         out["directory_binds"] = directory_binds
     if fs_workspace_only is not None:
@@ -334,19 +360,74 @@ def _prompt_permission_overrides(existing: Optional[dict]) -> dict:
     return out
 
 
-def _workspace_root_base() -> str:
+def _normalize_abs_path(path: str) -> str:
+    raw = str(path or "").strip()
+    if not raw:
+        return ""
+    expanded = os.path.expanduser(raw)
+    if not os.path.isabs(expanded):
+        expanded = os.path.abspath(expanded)
+    normalized = os.path.realpath(expanded).rstrip("/")
+    return normalized or "/"
+
+
+def _workspace_runtime_root() -> str:
+    runtime_workspace = resolve_agent_runtime_paths("main", config.path)["workspace"]
+    runtime_workspace_path = _normalize_abs_path(runtime_workspace)
+    return os.path.dirname(runtime_workspace_path) or "/root/.openclaw"
+
+
+def _workspace_root_candidates() -> List[str]:
     defaults = config.data.get("agents", {}).get("defaults", {}) or {}
-    base_workspace = str(defaults.get("workspace", "/root/.openclaw/workspace") or "/root/.openclaw/workspace").rstrip("/")
-    parent = os.path.dirname(base_workspace) or "/root/.openclaw"
-    return parent
+    runtime_root = _workspace_runtime_root()
+    out: List[str] = []
+
+    def _add(path: str):
+        normalized = _normalize_abs_path(path)
+        if normalized and normalized not in out:
+            out.append(normalized)
+
+    configured_workspace = str(defaults.get("workspace", "") or "").strip()
+    if configured_workspace:
+        expanded = os.path.expanduser(configured_workspace)
+        if not os.path.isabs(expanded):
+            expanded = os.path.join(runtime_root, expanded)
+        _add(os.path.dirname(expanded))
+
+    _add(runtime_root)
+    return out
+
+
+def _workspace_root_base() -> str:
+    roots = _workspace_root_candidates()
+    if roots:
+        return roots[0]
+    return _workspace_runtime_root()
+
+
+def _workspace_root_hint() -> str:
+    roots = _workspace_root_candidates()
+    if not roots:
+        return _workspace_root_base()
+    return " 或 ".join(roots)
+
+
+def _is_within_root(path: str, root: str) -> bool:
+    try:
+        return os.path.commonpath([path, root]) == root
+    except ValueError:
+        return False
 
 
 def _next_workspace_path(existing_agents: List[dict]) -> str:
     parent = _workspace_root_base()
+    parent_normalized = _normalize_abs_path(parent)
     used = set()
     for a in existing_agents:
-        ws = str(a.get("workspace", "") or "").rstrip("/")
+        ws = _normalize_abs_path(str(a.get("workspace", "") or ""))
         if not ws:
+            continue
+        if os.path.dirname(ws) != parent_normalized:
             continue
         base = os.path.basename(ws)
         m = WORKSPACE_SUFFIX_RE.match(base)
@@ -367,11 +448,13 @@ def _next_workspace_path(existing_agents: List[dict]) -> str:
 
 
 def _validate_workspace_path(path: str) -> bool:
-    p = (path or "").strip().rstrip("/")
+    p = _normalize_abs_path(path)
     if not p:
         return False
-    parent = _workspace_root_base().rstrip("/")
-    if not p.startswith(parent + "/"):
+    roots = _workspace_root_candidates()
+    if not roots:
+        return False
+    if not any(_is_within_root(p, root) for root in roots):
         return False
     base = os.path.basename(p)
     # 手动输入轻度放宽：允许 workspace* 命名；自动分配仍使用 workspace/workspace_XX。
@@ -379,9 +462,9 @@ def _validate_workspace_path(path: str) -> bool:
 
 
 def _validate_existing_workspace(path: str):
-    p = (path or "").strip().rstrip("/")
+    p = _normalize_abs_path(path)
     if not _validate_workspace_path(p):
-        return False, "workspace 必须在 /root/.openclaw 下，且名称需以 workspace 开头"
+        return False, f"workspace 必须在 {_workspace_root_hint()} 下，且名称需以 workspace 开头"
     if not os.path.isdir(p):
         return False, "workspace 目录不存在（仅允许绑定已有目录）"
     missing = [name for name in REQUIRED_WORKSPACE_FILES if not os.path.exists(os.path.join(p, name))]
@@ -391,29 +474,29 @@ def _validate_existing_workspace(path: str):
 
 
 def _detect_existing_workspace(existing_agents: List[dict]) -> str:
-    parent = _workspace_root_base().rstrip("/")
-    if not parent or not os.path.isdir(parent):
-        return ""
-
     used = {
-        str(a.get("workspace", "") or "").rstrip("/")
+        _normalize_abs_path(str(a.get("workspace", "") or ""))
         for a in existing_agents
-        if isinstance(a, dict) and str(a.get("workspace", "") or "").strip()
+        if isinstance(a, dict) and _normalize_abs_path(str(a.get("workspace", "") or ""))
     }
 
-    preferred = os.path.join(parent, "workspace")
-    if os.path.isdir(preferred) and preferred.rstrip("/") not in used:
-        return preferred
+    for parent in _workspace_root_candidates():
+        if not parent or not os.path.isdir(parent):
+            continue
 
-    candidates = []
-    for name in sorted(os.listdir(parent)):
-        path = os.path.join(parent, name)
-        if os.path.isdir(path) and name.startswith("workspace"):
-            candidates.append(path.rstrip("/"))
+        preferred = _normalize_abs_path(os.path.join(parent, "workspace"))
+        if os.path.isdir(preferred) and preferred not in used:
+            return preferred
 
-    for candidate in candidates:
-        if candidate not in used:
-            return candidate
+        candidates = []
+        for name in sorted(os.listdir(parent)):
+            path = os.path.join(parent, name)
+            if os.path.isdir(path) and name.startswith("workspace"):
+                candidates.append(_normalize_abs_path(path))
+
+        for candidate in candidates:
+            if candidate not in used:
+                return candidate
     return ""
 
 
@@ -451,7 +534,7 @@ def _ensure_workspace_scaffold(workspace_path: str, agent_id: str):
 
 
 def _ensure_agent_runtime_dirs(agent_id: str):
-    root = _workspace_root_base().rstrip("/") or "/root/.openclaw"
+    root = str(resolve_agent_runtime_paths("main", config.path).get("root", "") or "").rstrip("/") or "/root/.openclaw"
     agent_root = os.path.join(root, "agents", agent_id)
     os.makedirs(os.path.join(agent_root, "agent"), exist_ok=True)
     os.makedirs(os.path.join(agent_root, "sessions"), exist_ok=True)
@@ -938,7 +1021,7 @@ def main_agent_settings_menu():
                 workspace_path = _detect_existing_workspace(_get_agents_list())
                 if not workspace_path:
                     console.print("\n[yellow]⚠️ 未探测到可绑定的 workspace 目录[/]")
-                    console.print(f"  [dim]查找范围: {_workspace_root_base()} 下 workspace* 且未被其他 Agent 使用[/]")
+                    console.print(f"  [dim]查找范围: {_workspace_root_hint()} 下 workspace* 且未被其他 Agent 使用[/]")
                     pause_enter()
                     continue
 
@@ -1181,7 +1264,7 @@ def main_agent_settings_menu():
         default_ws = existing_settings["workspace_path"] or _next_workspace_path(_get_agents_list())
         workspace_path = Prompt.ask("[bold]请输入 workspace 绝对路径[/]", default=default_ws).strip()
         if not _validate_workspace_path(workspace_path):
-            console.print("\n[bold red]❌ workspace 必须在 /root/.openclaw 下，且名称需以 workspace 开头[/]")
+            console.print(f"\n[bold red]❌ workspace 必须在 {_workspace_root_hint()} 下，且名称需以 workspace 开头[/]")
             pause_enter()
             continue
 

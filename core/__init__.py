@@ -68,6 +68,10 @@ def _normalize_permission_override_record(value: Any) -> Optional[Dict[str, Any]
 
     out: Dict[str, Any] = {}
 
+    tools_profile = str(value.get("toolsProfile", value.get("tools_profile", "")) or "").strip().lower()
+    if tools_profile in {"full", "coding", "messaging", "minimal"}:
+        out["toolsProfile"] = tools_profile
+
     raw_binds = value.get("directoryBinds")
     if raw_binds is None:
         raw_binds = value.get("directory_binds")

@@ -292,6 +292,8 @@ def _permission_overrides_from_agent(agent: Dict[str, Any]) -> Dict[str, Any]:
     access = extract_agent_access_profile(agent)
     baseline = build_agent_access_profile(access.get("access_mode", "rw"), access.get("capability_preset", "workspace-collab"))
     baseline_tools = baseline.get("tools") if isinstance(baseline.get("tools"), dict) else {}
+    baseline_profile = str(baseline_tools.get("profile", "") or "").strip().lower()
+    current_profile = str(tools.get("profile", "") or "").strip().lower()
     baseline_deny = [
         str(x).strip()
         for x in (baseline_tools.get("deny", []) if isinstance(baseline_tools.get("deny"), list) else [])
@@ -304,6 +306,7 @@ def _permission_overrides_from_agent(agent: Dict[str, Any]) -> Dict[str, Any]:
     ]
     return normalize_permission_overrides(
         {
+            "tools_profile": current_profile if current_profile and current_profile != baseline_profile else "",
             "directory_binds": docker.get("binds", []),
             "fs_workspace_only": fs_cfg.get("workspaceOnly"),
             "exec_security": exec_cfg.get("security", ""),
@@ -318,6 +321,8 @@ def _permission_overrides_to_api(overrides: Optional[Dict[str, Any]]) -> Dict[st
     if not normalized:
         return {}
     out: Dict[str, Any] = {}
+    if normalized.get("tools_profile"):
+        out["toolsProfile"] = str(normalized["tools_profile"])
     binds = normalized.get("directory_binds")
     if isinstance(binds, list) and binds:
         out["directoryBinds"] = binds
@@ -784,6 +789,7 @@ class AgentSecurityIn(BaseModel):
 
 class AgentPermissionPolicyIn(BaseModel):
     agentId: str
+    toolsProfile: str = ""
     directoryBinds: List[str] = Field(default_factory=list)
     fsWorkspaceOnly: Optional[bool] = None
     execSecurity: str = ""
@@ -1033,6 +1039,7 @@ async def set_agent_permission_policy_api(body: AgentPermissionPolicyIn):
     else:
         overrides = normalize_permission_overrides(
             {
+                "tools_profile": body.toolsProfile,
                 "directory_binds": body.directoryBinds,
                 "fs_workspace_only": body.fsWorkspaceOnly,
                 "exec_security": body.execSecurity,

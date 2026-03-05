@@ -259,6 +259,7 @@
           <button class="btn subtle" id="setWorkspaceOnlyBtn">保存运行环境与权限</button>
           <hr />
           <h4>细粒度目录/功能权限（默认不配置）</h4>
+          <div class="row"><label>tools.profile</label><select id="agentToolsProfile"><option value="">不配置</option><option value="full">full（最大权限）</option><option value="coding">coding（开发常用）</option><option value="messaging">messaging（消息协作）</option><option value="minimal">minimal（最小权限）</option></select></div>
           <div class="row"><label>目录白名单绑定（逗号分隔）</label><input id="agentDirectoryBinds" type="text" placeholder="/root/.openclaw/skills:/skills:ro,/root/.openclaw/software:/software:ro" /></div>
           <div class="row"><label>tools.fs.workspaceOnly</label><select id="agentFsWorkspaceOnly"><option value="">不配置</option><option value="true">true</option><option value="false">false</option></select></div>
           <div class="row"><label>tools.exec.security</label><select id="agentExecSecurity"><option value="">不配置</option><option value="deny">deny</option><option value="allowlist">allowlist</option><option value="full">full</option></select></div>

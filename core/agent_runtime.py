@@ -67,6 +67,7 @@ TOOLS_PROFILE_TO_PRESET = {
 }
 
 EXEC_SECURITY_VALUES = {"deny", "allowlist", "full"}
+TOOLS_PROFILE_VALUES = {"full", "coding", "messaging", "minimal"}
 
 
 def openclaw_root_from_config(config_path: Optional[str]) -> str:
@@ -120,6 +121,10 @@ def normalize_permission_overrides(overrides: Optional[Dict[str, Any]]) -> Dict[
 
     out: Dict[str, Any] = {}
 
+    tools_profile = str(overrides.get("tools_profile", overrides.get("toolsProfile", "")) or "").strip().lower()
+    if tools_profile in TOOLS_PROFILE_VALUES:
+        out["tools_profile"] = tools_profile
+
     raw_binds = overrides.get("directory_binds")
     if raw_binds is None:
         raw_binds = overrides.get("directoryBinds")
@@ -171,6 +176,10 @@ def apply_permission_overrides(
     if not isinstance(tools, dict):
         tools = {}
         agent_entry["tools"] = tools
+
+    tools_profile = normalized.get("tools_profile")
+    if isinstance(tools_profile, str) and tools_profile in TOOLS_PROFILE_VALUES:
+        tools["profile"] = tools_profile
 
     binds = normalized.get("directory_binds")
     if isinstance(binds, list) and binds:
