@@ -37,6 +37,65 @@ function runNodeScript(scriptName, args) {
   return typeof result.status === "number" ? result.status : 1;
 }
 
+function parseRuntimeEnv(repoRoot) {
+  const out = Object.assign({}, process.env);
+  const envFile = path.join(repoRoot, ".env.runtime");
+  if (!fs.existsSync(envFile)) {
+    return out;
+  }
+  let content = "";
+  try {
+    content = fs.readFileSync(envFile, "utf8");
+  } catch (_) {
+    return out;
+  }
+
+  const lines = content.split(/\r?\n/);
+  for (const line of lines) {
+    const text = String(line || "").trim();
+    if (!text || text.startsWith("#")) {
+      continue;
+    }
+    const idx = text.indexOf("=");
+    if (idx <= 0) {
+      continue;
+    }
+    const key = text.slice(0, idx).trim();
+    if (!key) {
+      continue;
+    }
+    const value = text.slice(idx + 1);
+    out[key] = value;
+  }
+  return out;
+}
+
+function runPackagedRuntime(args) {
+  const repoRoot = path.resolve(__dirname, "..");
+  const entry = path.join(repoRoot, "easyclaw.py");
+  const candidates = [
+    path.join(repoRoot, ".venv", "bin", "python3"),
+    path.join(repoRoot, ".venv", "Scripts", "python.exe")
+  ];
+  let pythonBin = "";
+  for (const item of candidates) {
+    if (fs.existsSync(item)) {
+      pythonBin = item;
+      break;
+    }
+  }
+  if (!pythonBin || !fs.existsSync(entry)) {
+    return 127;
+  }
+
+  const env = parseRuntimeEnv(repoRoot);
+  const result = spawnSync(pythonBin, [entry, ...(args || [])], {
+    stdio: "inherit",
+    env
+  });
+  return typeof result.status === "number" ? result.status : 1;
+}
+
 function resolveInstalledClawpanel() {
   const seen = new Set();
   const candidates = [];
@@ -85,6 +144,11 @@ function resolveInstalledClawpanel() {
 }
 
 function runInstalledClawpanel(args) {
+  const packagedCode = runPackagedRuntime(args);
+  if (packagedCode !== 127) {
+    return packagedCode;
+  }
+
   const target = resolveInstalledClawpanel();
   if (!target) {
     return 127;

@@ -62,6 +62,8 @@ clawpanel web --port 4231
 说明：
 - npm 包会在全局安装后尝试自动执行 `install.sh`；若失败，可手动执行 `clawpanel install` 或 `clawpanel-install`。
 - 首次执行 `clawpanel` 时如果发现运行时未安装，会自动触发引导安装（可用 `CLAWPANEL_AUTO_BOOTSTRAP=0` 关闭）。
+- npm 默认把运行时安装到 npm 包目录（例如 `<npm_global_root>/@milkkey/clawpanel`），避免额外占用用户家目录作为程序安装路径。
+- OpenClaw 配置与数据目录仍遵循官方路径（默认 `~/.openclaw`），如需改动可显式传 `CLAWPANEL_OPENCLAW_HOME`。
 - 需自定义安装目录时，可在 npm 安装前传入环境变量：
 
 ```bash

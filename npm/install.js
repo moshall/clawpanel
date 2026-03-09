@@ -40,6 +40,33 @@ function buildEnvInstallArgs() {
   return args;
 }
 
+function hasFlag(args, flagName) {
+  for (const item of args || []) {
+    const token = String(item || "").trim();
+    if (token === flagName || token.startsWith(`${flagName}=`)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function buildNpmDefaultArgs(repoRoot, forwardArgs) {
+  const args = [];
+  const hasCliInstallDir = hasFlag(forwardArgs, "--install-dir");
+  const hasCliBinDir = hasFlag(forwardArgs, "--bin-dir");
+  const hasEnvInstallDir = String(process.env.CLAWPANEL_INSTALL_DIR || process.env.EASYCLAW_INSTALL_DIR || "").trim();
+  const hasEnvBinDir = String(process.env.CLAWPANEL_BIN_DIR || process.env.EASYCLAW_BIN_DIR || "").trim();
+
+  // npm mode default: keep runtime inside npm package directory.
+  if (!hasCliInstallDir && !hasEnvInstallDir) {
+    args.push("--install-dir", repoRoot);
+  }
+  if (!hasCliBinDir && !hasEnvBinDir) {
+    args.push("--bin-dir", path.join(repoRoot, ".bin"));
+  }
+  return args;
+}
+
 function runInstall(forwardArgs) {
   const repoRoot = path.resolve(__dirname, "..");
   const installScript = path.join(repoRoot, "install.sh");
@@ -48,7 +75,12 @@ function runInstall(forwardArgs) {
     return 1;
   }
 
-  const args = [installScript, ...buildEnvInstallArgs(), ...(forwardArgs || [])];
+  const args = [
+    installScript,
+    ...buildNpmDefaultArgs(repoRoot, forwardArgs || []),
+    ...buildEnvInstallArgs(),
+    ...(forwardArgs || [])
+  ];
   const result = spawnSync("bash", args, {
     stdio: "inherit",
     env: process.env
