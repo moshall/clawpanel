@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ClawPanel Docker bootstrap installer
 # Example:
-#   curl -fsSL https://raw.githubusercontent.com/moshall/easyclaw/main/install-docker.sh | \
+#   curl -fsSL https://raw.githubusercontent.com/moshall/clawpanel/main/install-docker.sh | \
 #     bash -s -- --container clawpanel-web --install-dir /opt/clawpanel --bin-dir /usr/local/bin
 
 set -euo pipefail
@@ -17,7 +17,7 @@ Required:
   --container <name>     Target running container name
 
 Bootstrap options:
-  --repo <owner/name>    GitHub repo slug (default: moshall/easyclaw)
+  --repo <owner/name>    GitHub repo slug (default: moshall/clawpanel)
   --ref <git-ref>        Branch/tag/commit (default: main)
   --auto-deps            Auto-install missing deps in container (default)
   --no-auto-deps         Disable auto dependency installation
@@ -31,7 +31,7 @@ EOF
 }
 
 CONTAINER_NAME=""
-REPO_SLUG="${EASYCLAW_REPO_SLUG:-moshall/easyclaw}"
+REPO_SLUG="${CLAWPANEL_REPO_SLUG:-${EASYCLAW_REPO_SLUG:-moshall/clawpanel}}"
 REF="${EASYCLAW_REF:-main}"
 AUTO_DEPS="${EASYCLAW_AUTO_DEPS:-1}"
 DRY_RUN="0"

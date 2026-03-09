@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ClawPanel online bootstrap installer
 # Example:
-#   curl -fsSL https://raw.githubusercontent.com/moshall/easyclaw/main/install-online.sh | bash -s -- --install-dir /opt/clawpanel
+#   curl -fsSL https://raw.githubusercontent.com/moshall/clawpanel/main/install-online.sh | bash -s -- --install-dir /opt/clawpanel
 
 set -euo pipefail
 
@@ -13,7 +13,7 @@ Usage:
   bash install-online.sh [bootstrap-options] [install-options...]
 
 Bootstrap options:
-  --repo <owner/name>   GitHub repo slug (default: moshall/easyclaw)
+  --repo <owner/name>   GitHub repo slug (default: moshall/clawpanel)
   --ref <git-ref>       Branch/tag/commit (default: main)
   --auto-deps           Auto-install missing system dependencies (default)
   --no-auto-deps        Disable auto dependency installation
@@ -27,7 +27,7 @@ Install options:
 EOF
 }
 
-REPO_SLUG="${EASYCLAW_REPO_SLUG:-moshall/easyclaw}"
+REPO_SLUG="${CLAWPANEL_REPO_SLUG:-${EASYCLAW_REPO_SLUG:-moshall/clawpanel}}"
 REF="${EASYCLAW_REF:-main}"
 AUTO_DEPS="${EASYCLAW_AUTO_DEPS:-1}"
 KEEP_TEMP="0"

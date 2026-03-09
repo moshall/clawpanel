@@ -4,7 +4,7 @@ ClawPanel 是 OpenClaw 的管理工具，提供：
 - TUI 管理台（终端交互）
 - Web UI（浏览器可视化管理）
 
-说明：当前仓库地址仍为 `moshall/easyclaw`，安装脚本 URL 暂不变；运行命令已统一为 `clawpanel` / `clawtui`。
+说明：仓库已更名为 `moshall/clawpanel`，文档与安装脚本 URL 已同步更新；运行命令统一为 `clawpanel` / `clawtui`。
 
 ## 1. 功能特性
 
@@ -47,25 +47,25 @@ ClawPanel 是 OpenClaw 的管理工具，提供：
 ### 在线一键安装（推荐）
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/moshall/easyclaw/main/install-online.sh | bash
+curl -fsSL https://raw.githubusercontent.com/moshall/clawpanel/main/install-online.sh | bash
 ```
 
 自定义安装目录（便于脚本化调用）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/moshall/easyclaw/main/install-online.sh | bash -s -- --install-dir /opt/clawpanel
+curl -fsSL https://raw.githubusercontent.com/moshall/clawpanel/main/install-online.sh | bash -s -- --install-dir /opt/clawpanel
 ```
 
 也可同时指定命令目录：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/moshall/easyclaw/main/install-online.sh | bash -s -- --install-dir /opt/clawpanel --bin-dir /opt/clawpanel/bin
+curl -fsSL https://raw.githubusercontent.com/moshall/clawpanel/main/install-online.sh | bash -s -- --install-dir /opt/clawpanel --bin-dir /opt/clawpanel/bin
 ```
 
 关闭自动依赖安装（仅检查，不自动装）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/moshall/easyclaw/main/install-online.sh | bash -s -- --no-auto-deps
+curl -fsSL https://raw.githubusercontent.com/moshall/clawpanel/main/install-online.sh | bash -s -- --no-auto-deps
 ```
 
 ### 本地源码安装（macOS / Linux）
@@ -103,7 +103,7 @@ bash install.sh --install-dir /opt/clawpanel --bin-dir /opt/clawpanel/bin
 
 ```bash
 set -o pipefail
-curl -fsSL https://raw.githubusercontent.com/moshall/easyclaw/main/install-docker.sh | \
+curl -fsSL https://raw.githubusercontent.com/moshall/clawpanel/main/install-docker.sh | \
   bash -s -- --container clawpanel-web
 ```
 
@@ -111,7 +111,7 @@ curl -fsSL https://raw.githubusercontent.com/moshall/easyclaw/main/install-docke
 
 ```bash
 set -o pipefail
-curl -fsSL https://raw.githubusercontent.com/moshall/easyclaw/main/install-docker.sh | \
+curl -fsSL https://raw.githubusercontent.com/moshall/clawpanel/main/install-docker.sh | \
   bash -s -- --container clawpanel-web \
   --install-dir /root/.openclaw/software/clawpanel \
   --openclaw-home /root/.openclaw \
@@ -132,7 +132,7 @@ docker inspect clawpanel-web --format '{{range .Mounts}}{{println .Source "=>" .
 
 ```bash
 set -o pipefail
-curl -fsSL https://raw.githubusercontent.com/moshall/easyclaw/main/install-docker.sh | \
+curl -fsSL https://raw.githubusercontent.com/moshall/clawpanel/main/install-docker.sh | \
   bash -s -- --container openclaw_260205 \
   --install-dir /root/.openclaw/software/clawpanel \
   --openclaw-home /root/.openclaw
@@ -141,7 +141,7 @@ curl -fsSL https://raw.githubusercontent.com/moshall/easyclaw/main/install-docke
 也可直接在容器内执行在线安装：
 
 ```bash
-docker exec -i clawpanel-web bash -lc 'curl -fsSL https://raw.githubusercontent.com/moshall/easyclaw/main/install-online.sh | bash'
+docker exec -i clawpanel-web bash -lc 'curl -fsSL https://raw.githubusercontent.com/moshall/clawpanel/main/install-online.sh | bash'
 ```
 
 安装后可直接在容器中运行：
