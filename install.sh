@@ -379,14 +379,36 @@ if [[ ! -d "${VENV_DIR}" ]]; then
 fi
 
 PY_BIN="${VENV_DIR}/bin/python3"
-PIP_BIN="${VENV_DIR}/bin/pip"
+
+if [[ ! -x "${PY_BIN}" ]]; then
+  warn "检测到虚拟环境不完整，重建: ${VENV_DIR}"
+  rm -rf "${VENV_DIR}"
+  python3 -m venv "${VENV_DIR}"
+fi
+
+ensure_venv_pip() {
+  if "${PY_BIN}" -m pip --version >/dev/null 2>&1; then
+    return 0
+  fi
+
+  info "虚拟环境缺少 pip，尝试修复..."
+  "${PY_BIN}" -m ensurepip --upgrade >/dev/null 2>&1 || true
+
+  if "${PY_BIN}" -m pip --version >/dev/null 2>&1; then
+    return 0
+  fi
+
+  err "虚拟环境中 pip 不可用。请先安装 python3-venv（Debian/Ubuntu）后重试。"
+  return 1
+}
 
 if [[ "${EASYCLAW_SKIP_PIP:-0}" == "1" ]]; then
   warn "跳过依赖安装 (EASYCLAW_SKIP_PIP=1)"
 else
+  ensure_venv_pip
   info "安装 Python 依赖..."
-  "${PIP_BIN}" install --upgrade pip >/dev/null
-  "${PIP_BIN}" install rich questionary fastapi uvicorn jinja2 pydantic >/dev/null
+  "${PY_BIN}" -m pip install --upgrade pip >/dev/null
+  "${PY_BIN}" -m pip install rich questionary fastapi uvicorn jinja2 pydantic >/dev/null
   ok "依赖安装完成"
 fi
 

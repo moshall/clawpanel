@@ -70,6 +70,15 @@ function parseRuntimeEnv(repoRoot) {
   return out;
 }
 
+function packagedDepsHealthy(pythonBin, env) {
+  const result = spawnSync(
+    pythonBin,
+    ["-c", "import rich,questionary,fastapi,uvicorn,jinja2,pydantic"],
+    { stdio: "ignore", env }
+  );
+  return result.status === 0;
+}
+
 function runPackagedRuntime(args) {
   const repoRoot = path.resolve(__dirname, "..");
   const entry = path.join(repoRoot, "easyclaw.py");
@@ -89,6 +98,9 @@ function runPackagedRuntime(args) {
   }
 
   const env = parseRuntimeEnv(repoRoot);
+  if (!packagedDepsHealthy(pythonBin, env)) {
+    return 127;
+  }
   const result = spawnSync(pythonBin, [entry, ...(args || [])], {
     stdio: "inherit",
     env
